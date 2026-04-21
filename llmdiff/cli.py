@@ -3,13 +3,16 @@ import json
 import asyncio
 from pathlib import Path
 from typing import Optional
+
 import typer
 from rich.console import Console
-from rich.panel import Panel
 
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig
 from llmdiff.runner import run_all
-
+from llmdiff.differ import compute_diff
+from llmdiff.metrics import semantic_similarity, compute_summary
+from llmdiff.renderers.terminal import render_case_inline, render_summary
+from llmdiff.renderers.json_ import render_json
 
 app = typer.Typer(
     name="llmdiff",
@@ -30,75 +33,116 @@ def _load_cases(path: Path) -> list[TestCase]:
     if not path.exists():
         typer.echo(f"Error: inputs file not found: {path}", err=True)
         raise typer.Exit(1)
-    raw = json.loads(path.read_text())
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        typer.echo(f"Error: invalid JSON in {path}: {e}", err=True)
+        raise typer.Exit(1)
     return [TestCase(**c) for c in raw]
 
 
 @app.command()
 def main(
-    prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt A"),
-    prompt_b: Path = typer.Option(..., "--prompt-b", help="System prompt B"),
-    inputs: Path = typer.Option(..., "--inputs", help="Test cases JSON"),
-    model: str = typer.Option("gpt-4o-mini", "--model"),
-    model_a: Optional[str] = typer.Option(None, "--model-a"),
-    model_b: Optional[str] = typer.Option(None, "--model-b"),
-    provider: str = typer.Option("ollama", "--provider"),
-    base_url: str = typer.Option("http://localhost:11434", "--base-url"),
-    temperature: Optional[float] = typer.Option(None, "--temperature"),
-    param_a: Optional[str] = typer.Option(
-        None, "--param-a", help="e.g. temperature=0.0"
+    prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
+    prompt_b: Path = typer.Option(..., "--prompt-b", help="System prompt file B"),
+    inputs: Path = typer.Option(..., "--inputs", help="Test cases JSON file"),
+    model: str = typer.Option("llama3.2", "--model", help="Ollama model name"),
+    base_url: str = typer.Option(
+        "http://localhost:11434", "--base-url", help="Ollama base URL"
     ),
-    param_b: Optional[str] = typer.Option(None, "--param-b"),
-    concurrency: int = typer.Option(5, "--concurrency"),
-    no_semantic: bool = typer.Option(False, "--no-semantic"),
-    filter_changed: bool = typer.Option(False, "--filter"),
-    threshold: Optional[float] = typer.Option(None, "--threshold"),
-    output_format: str = typer.Option("inline", "--format"),
-    output: Optional[Path] = typer.Option(None, "--output"),
+    temperature: Optional[float] = typer.Option(None, "--temperature"),
+    concurrency: int = typer.Option(3, "--concurrency", help="Parallel case limit"),
+    no_semantic: bool = typer.Option(False, "--no-semantic", help="Skip embedding similarity"),
+    filter_changed: bool = typer.Option(False, "--filter", help="Only show changed cases"),
+    threshold: Optional[float] = typer.Option(
+        None, "--threshold",
+        help="Flag as changed if similarity drops below this value"
+    ),
+    output_format: str = typer.Option("inline", "--format", help="inline | side-by-side | json"),
+    output: Optional[Path] = typer.Option(None, "--output", help="Save JSON report to file"),
 ):
-    """Compare two LLM prompt configurations across a set of test cases."""
+    """
+    Compare two system prompts across a set of test cases using a local Ollama model.
 
-    def _parse_param(s: Optional[str]) -> dict:
-        if not s:
-            return {}
-        key, _, val = s.partition("=")
-        return {key.strip(): float(val) if "." in val else val.strip()}
-
-    params_a = _parse_param(param_a)
-    params_b = _parse_param(param_b)
-
-    temp_a = params_a.get("temperature", temperature)
-    temp_b = params_b.get("temperature", temperature)
-
-    if provider != "ollama":
-        typer.echo(
-            "Warning: only Ollama is implemented in this build; continuing with Ollama API.",
-            err=True,
-        )
-
-    cfg_a = ModelConfig(model=model_a or model, base_url=base_url, temperature=temp_a)
-    cfg_b = ModelConfig(model=model_b or model, base_url=base_url, temperature=temp_b)
-
-    system_a = _load_prompt(prompt_a)
-    system_b = _load_prompt(prompt_b)
-    cases = _load_cases(inputs)
+    Example:\n
+        llmdiff --prompt-a v1.txt --prompt-b v2.txt --inputs cases.json --model llama3.2
+    """
+    model_cfg = ModelConfig(
+        model=model,
+        base_url=base_url,
+        temperature=temperature,
+    )
 
     run_cfg = RunConfig(
-        side_a=SideConfig(prompt=system_a, model_cfg=cfg_a),
-        side_b=SideConfig(prompt=system_b, model_cfg=cfg_b),
-        cases=cases,
+        side_a=SideConfig(prompt=_load_prompt(prompt_a), model_cfg=model_cfg),
+        side_b=SideConfig(prompt=_load_prompt(prompt_b), model_cfg=model_cfg),
+        cases=_load_cases(inputs),
         concurrency=concurrency,
         semantic=not no_semantic,
         output_format=output_format,
-        filter_changed=filter_changed,
+        filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
     )
 
-    results = asyncio.run(run_all(run_cfg))
-    for case, resp_a, resp_b in results:
-        console.print(
-            Panel(
-                f"[bold]A:[/bold] {resp_a}\n\n[bold]B:[/bold] {resp_b}",
-                title=f"Case: {case.id}",
+    asyncio.run(_run(run_cfg, output_path=output))
+
+
+async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
+    label_a = f"prompt-a / {cfg.side_a.model_cfg.model}"
+    label_b = f"prompt-b / {cfg.side_b.model_cfg.model}"
+
+    # Check Ollama is reachable before starting
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{cfg.side_a.model_cfg.base_url}/api/tags", timeout=5.0
             )
+            r.raise_for_status()
+    except Exception:
+        console.print(
+            f"[red]Error:[/red] Cannot reach Ollama at "
+            f"{cfg.side_a.model_cfg.base_url}. Is it running?"
         )
+        raise typer.Exit(1)
+
+    with console.status(f"[dim]Running {len(cfg.cases)} cases...[/dim]"):
+        raw_results = await run_all(cfg)
+
+    results = []
+    for case, resp_a, resp_b in raw_results:
+        sim = None
+        if cfg.semantic:
+            loop = asyncio.get_event_loop()
+            sim = await loop.run_in_executor(
+                None, semantic_similarity, resp_a, resp_b
+            )
+        result = compute_diff(
+            case_id=case.id,
+            response_a=resp_a,
+            response_b=resp_b,
+            similarity=sim,
+            threshold=cfg.threshold,
+        )
+        results.append(result)
+
+    display = [r for r in results if r.changed] if cfg.filter_changed else results
+    summary = compute_summary(results)
+
+    if cfg.output_format == "json":
+        out = render_json(results, summary)
+        if output_path:
+            output_path.write_text(out)
+            console.print(f"[dim]Saved to {output_path}[/dim]")
+        else:
+            print(out)
+        return
+
+    for result in display:
+        render_case_inline(result, label_a=label_a, label_b=label_b)
+
+    render_summary(summary)
+
+    if output_path:
+        output_path.write_text(render_json(results, summary))
+        console.print(f"[dim]JSON report saved to {output_path}[/dim]")
