@@ -6,7 +6,7 @@ Changed a system prompt and not sure what you actually changed? `llmdiff` runs b
 
 ```
 $ llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt \
-          --inputs tests/cases.json --model gpt-4o-mini
+          --inputs tests/cases.json --model llama3.2
 
 ─────────────────────────────────────────────────────────────────
  Case: customer-greeting  │  Similarity: 0.61  │  CHANGED
@@ -50,7 +50,7 @@ The diff framing maps directly to how developers already think about code change
 ## Install
 
 ```bash
-pip install llmdiff
+uv sync
 ```
 
 Requires Python 3.10+. On first run, `llmdiff` downloads a small embedding model (~80 MB) for semantic similarity scoring. This is a one-time download.
@@ -82,19 +82,17 @@ Requires Python 3.10+. On first run, `llmdiff` downloads a small embedding model
 ]
 ```
 
-**2. Set your API key**
+**2. Start Ollama and pull a model**
 
 ```bash
-export OPENAI_API_KEY=sk-...
-# or
-export ANTHROPIC_API_KEY=sk-ant-...
+ollama pull llama3.2
 ```
 
 **3. Run a diff**
 
 ```bash
 llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt \
-        --inputs tests/cases.json --model gpt-4o-mini
+  --inputs tests/cases.json --model llama3.2
 ```
 
 ---
@@ -108,35 +106,14 @@ llmdiff \
   --prompt-a prompts/system_v1.txt \
   --prompt-b prompts/system_v2.txt \
   --inputs tests/cases.json \
-  --model gpt-4o-mini
-```
-
-### Compare two models (same prompt)
-
-```bash
-llmdiff \
-  --prompt-a prompts/system.txt \
-  --model-a gpt-4o-mini \
-  --model-b claude-haiku-4-5 \
-  --inputs tests/cases.json
-```
-
-### Compare two parameter settings
-
-```bash
-llmdiff \
-  --prompt-a prompts/system.txt \
-  --model gpt-4o-mini \
-  --param-a temperature=0.0 \
-  --param-b temperature=0.9 \
-  --inputs tests/cases.json
+  --model llama3.2
 ```
 
 ### Filter and threshold
 
 ```bash
 # Only show cases that actually changed
-llmdiff ... --filter changed
+llmdiff ... --filter
 
 # Only show cases where similarity dropped below 0.5
 llmdiff ... --threshold 0.5
@@ -145,10 +122,9 @@ llmdiff ... --threshold 0.5
 ### Output formats
 
 ```bash
-llmdiff ... --format inline        # default: unified diff
-llmdiff ... --format side-by-side  # columns
+llmdiff ... --format inline        # default terminal output
 llmdiff ... --format json          # machine-readable, for scripting
-llmdiff ... --output report.html   # save HTML report
+llmdiff ... --output report.json   # save JSON report
 ```
 
 ### Skip semantic scoring (faster)
@@ -157,21 +133,10 @@ llmdiff ... --output report.html   # save HTML report
 llmdiff ... --no-semantic
 ```
 
-### Use with local Ollama
+### Use a custom Ollama endpoint
 
 ```bash
-llmdiff \
-  --prompt-a prompts/v1.txt \
-  --prompt-b prompts/v2.txt \
-  --inputs tests/cases.json \
-  --provider ollama \
-  --model llama3.2
-```
-
-### Use with Groq, Together AI, or any OpenAI-compatible API
-
-```bash
-llmdiff ... --base-url https://api.groq.com/openai/v1 --model llama-3.1-8b-instant
+llmdiff ... --base-url http://localhost:11434 --model llama3.2
 ```
 
 ---
@@ -185,7 +150,7 @@ llmdiff \
   --prompt-a prompts/system_main.txt \
   --prompt-b prompts/system_branch.txt \
   --inputs tests/regression.json \
-  --model gpt-4o-mini \
+  --model llama3.2 \
   --threshold 0.6 \
   --format json | jq '.summary.changed_count'
 ```
@@ -202,44 +167,68 @@ Each case is a JSON object with:
 | `user` | yes | The user message to send |
 | `context` | no | Prior conversation turns (for multi-turn testing) |
 
-Context follows the standard `[{"role": "...", "content": "..."}]` format used by all major providers.
+Context follows the standard `[{"role": "...", "content": "..."}]` chat message format.
 
 ---
 
 ## Metrics
 
-For each test case, `llmdiff` reports:
+`llmdiff` reports both per-case metrics and run-level summary metrics.
+
+### Per-case metrics
 
 | Metric | What it means |
 |---|---|
-| Similarity score | Cosine similarity between response embeddings (0 = completely different, 1 = identical meaning) |
-| Length delta | Token count change as a percentage |
-| Structural change | Whether lists, code blocks, or formatting markers changed |
-| Token diff | Inline unified diff of the raw text |
+| Similarity score | Cosine similarity between response embeddings, clamped to [0, 1]. Omitted when using `--no-semantic`. |
+| Semantic distance | Displayed in terminal as `1 - similarity`. |
+| Length A / Length B | Word count in each response (`len(text.split())`). |
+| Length delta (`length_pct`) | Percentage change from A to B: `((words_b - words_a) / words_a) * 100`, rounded to 1 decimal. |
+| Structural change | Boolean checks for `lists_changed` and `code_blocks_changed`. |
+| Unified diff | Line-level unified diff from `difflib.unified_diff`. |
 
-The summary shows aggregate statistics across all cases and flags the most and least diverged inputs — useful for identifying which test cases are most sensitive to your prompt change.
+`changed` is `true` when either:
+
+- A line-level diff exists, or
+- `--threshold` is set and `similarity < threshold`.
+
+### Summary metrics
+
+| Field | What it means |
+|---|---|
+| `total` | Total number of test cases run. |
+| `changed_count` | Number of cases marked changed. |
+| `unchanged_count` | Number of unchanged cases. |
+| `avg_similarity` | Mean similarity across cases that have a similarity value. |
+| `most_diverged` | `(case_id, similarity)` pair with the lowest similarity. |
+| `least_changed` | `(case_id, similarity)` pair with the highest similarity. |
+
+These summary values help identify sensitive prompt tests quickly.
 
 ---
 
-## Supported providers
+## Supported runtime
 
-| Provider | Flag | Notes |
-|---|---|---|
-| OpenAI | `--provider openai` | Default. Requires `OPENAI_API_KEY` |
-| Anthropic | `--provider anthropic` | Requires `ANTHROPIC_API_KEY` |
-| Ollama | `--provider ollama` | Local, no key needed. Requires Ollama running |
-| OpenAI-compatible | `--base-url ...` | Groq, Together AI, any OpenAI-spec API |
+`llmdiff` currently targets local Ollama models.
+
+Examples:
+
+- `llama3.2`
+- `llama3.1:8b`
+- `mistral:latest`
+- `tinyllama:latest`
+
+No API keys are required.
 
 ---
 
 ## How it works
 
 1. Loads both configurations (prompts, models, parameters)
-2. Runs both sides concurrently against each test case (5 concurrent pairs by default)
+2. Runs both sides concurrently against each test case (3 concurrent pairs by default)
 3. Computes token-level diff using `difflib`
 4. Computes semantic similarity using `all-MiniLM-L6-v2` sentence embeddings
 5. Detects structural changes (lists, code blocks, length)
-6. Renders output using `rich` for terminal or exports to JSON / HTML
+6. Renders output using `rich` for terminal or exports to JSON
 
 The embedding model runs entirely locally — your response content never leaves your machine for the similarity computation.
 
@@ -250,7 +239,7 @@ The embedding model runs entirely locally — your response content never leaves
 LLMs are non-deterministic. Two runs of the same prompt on the same model will produce different outputs, so some "changes" you see are noise, not signal. For more reliable comparison:
 
 - Use `temperature=0.0` where possible
-- Use `--runs 3` to average similarity across multiple runs (slower, but reduces noise)
+- Run the same diff multiple times and compare summary trends
 - Focus on the summary trends across many test cases rather than individual results
 
 ---
@@ -267,7 +256,7 @@ LLMs are non-deterministic. Two runs of the same prompt on the same model will p
 
 ## Contributing
 
-Issues and PRs welcome. If you find a provider that doesn't work or output that's hard to read, open an issue with a minimal reproduction.
+Issues and PRs welcome. If output is hard to read or a metric is unclear, open an issue with a minimal reproduction.
 
 ---
 
