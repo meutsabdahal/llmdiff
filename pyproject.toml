@@ -19,6 +19,9 @@ dependencies = [
 [project.scripts]
 llmdiff = "llmdiff.cli:app"
 
+[tool.hatch.build.targets.wheel]
+packages = ["llmdiff"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
