@@ -1,0 +1,18 @@
+[
+  {
+    "id": "greeting",
+    "user": "Hello, how are you?"
+  },
+  {
+    "id": "factual",
+    "user": "What is the capital of France?"
+  },
+  {
+    "id": "multi-turn",
+    "user": "What is my name?",
+    "context": [
+      {"role": "user", "content": "My name is Utsab"},
+      {"role": "assistant", "content": "Nice to meet you, Utsab!"}
+    ]
+  }
+]
