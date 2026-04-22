@@ -1,6 +1,8 @@
 from __future__ import annotations
-import json
 import asyncio
+import json
+import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +31,55 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+def _load_local_env() -> None:
+    """Loads .env variables if they are not already set in the shell."""
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parents[1] / ".env",
+    ]
+    env_path = next((p for p in candidates if p.exists()), None)
+    if env_path is None:
+        return
+
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _configure_model_logging() -> None:
+    """Reduces noisy transformer/hub warnings while keeping errors visible."""
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+    for logger_name in ("transformers", "huggingface_hub", "sentence_transformers"):
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+    try:
+        from transformers.utils import logging as transformers_logging
+
+        transformers_logging.set_verbosity_error()
+        transformers_logging.disable_progress_bar()
+    except Exception:
+        # transformers is optional until semantic scoring is used
+        pass
+
+
+def _bootstrap_runtime_env() -> None:
+    _load_local_env()
+    _configure_model_logging()
 
 
 def _load_prompt(path: Path) -> str:
@@ -93,6 +144,8 @@ def main(
     Compare two models on the same prompt:\n
         llmdiff --prompt-a prompt.txt --prompt-b prompt.txt --model-a llama3.2 --model-b mistral --inputs cases.json
     """
+    _bootstrap_runtime_env()
+
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
 

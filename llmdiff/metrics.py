@@ -1,18 +1,23 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from functools import lru_cache
+from threading import Lock
 
 _model = None
+_model_lock = Lock()
 
 
 def _get_model():
     global _model
     if _model is None:
-        from rich.console import Console
-        from sentence_transformers import SentenceTransformer
+        with _model_lock:
+            if _model is None:
+                from rich.console import Console
+                from sentence_transformers import SentenceTransformer
 
-        Console().print("[dim]Loading embedding model (first run only)...[/dim]")
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+                Console().print(
+                    "[dim]Loading embedding model (first run only)...[/dim]"
+                )
+                _model = SentenceTransformer("all-MiniLM-L6-v2")
     return _model
 
 
