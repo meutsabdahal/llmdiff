@@ -4,8 +4,6 @@ from typing import Literal
 
 
 class ModelConfig(BaseModel):
-    side_a: SideConfig
-    side_b: SideConfig
     model: str
     base_url: str = "http://localhost:11434"
     temperature: float | None = None

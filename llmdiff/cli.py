@@ -90,6 +90,12 @@ def main(
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
 
+    if resolved_model_a == resolved_model_b and prompt_a == prompt_b:
+        console.print(
+            "[yellow]Warning:[/yellow] Both sides are identical "
+            "(same prompt file, same model). Results will show no diff."
+        )
+
     model_cfg_a = ModelConfig(
         model=resolved_model_a,
         base_url=base_url,
