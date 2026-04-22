@@ -21,6 +21,7 @@ from llmdiff.differ import compute_diff
 from llmdiff.metrics import semantic_similarity, compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
 from llmdiff.renderers.json_ import render_json
+from llmdiff.renderers.html import render_html
 
 app = typer.Typer(
     name="llmdiff",
@@ -166,8 +167,11 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
     if cfg.output_format == "json":
         out = render_json(results, summary)
         if output_path:
-            output_path.write_text(out)
-            console.print(f"[dim]Saved to {output_path}[/dim]")
+            if output_path.suffix.lower() == ".html":
+                output_path.write_text(render_html(results, summary))
+            else:
+                output_path.write_text(out)
+            console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
         return
@@ -178,8 +182,11 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
     render_summary(summary)
 
     if output_path:
-        output_path.write_text(render_json(results, summary))
-        console.print(f"[dim]JSON report saved to {output_path}[/dim]")
+        if output_path.suffix.lower() == ".html":
+            output_path.write_text(render_html(results, summary))
+        else:
+            output_path.write_text(render_json(results, summary))
+        console.print(f"[dim]Report saved to {output_path}[/dim]")
 
 
 async def run_one(
