@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["llm", "prompt-engineering", "cli", "developer-tools", "ollama"]
-authors = [{ name = "Utsab Dahal", email = "your@email.com" }]
+authors = [{ name = "Utsab Dahal", email = "utsabdahal@gmail.com" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
