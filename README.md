@@ -1,5 +1,7 @@
 # llmdiff
 
+[![CI](https://github.com/meutsabdahal/llmdiff/actions/workflows/ci.yml/badge.svg)](https://github.com/meutsabdahal/llmdiff/actions/workflows/ci.yml)
+
 **git diff for LLM prompts.**
 
 Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted — token by token, with semantic similarity scores.
