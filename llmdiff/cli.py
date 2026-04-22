@@ -54,7 +54,13 @@ def main(
     prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
     prompt_b: Path = typer.Option(..., "--prompt-b", help="System prompt file B"),
     inputs: Path = typer.Option(..., "--inputs", help="Test cases JSON file"),
-    model: str = typer.Option("llama3.2", "--model", help="Ollama model name"),
+    model: str = typer.Option(
+        "llama3.2",
+        "--model",
+        help="Model for both sides (unless overridden)",
+    ),
+    model_a: Optional[str] = typer.Option(None, "--model-a", help="Model for side A"),
+    model_b: Optional[str] = typer.Option(None, "--model-b", help="Model for side B"),
     base_url: str = typer.Option(
         "http://localhost:11434", "--base-url", help="Ollama base URL"
     ),
@@ -82,15 +88,20 @@ def main(
     Example:\n
         llmdiff --prompt-a v1.txt --prompt-b v2.txt --inputs cases.json --model llama3.2
     """
-    model_cfg = ModelConfig(
-        model=model,
+    model_cfg_a = ModelConfig(
+        model=model_a or model,
+        base_url=base_url,
+        temperature=temperature,
+    )
+    model_cfg_b = ModelConfig(
+        model=model_b or model,
         base_url=base_url,
         temperature=temperature,
     )
 
     run_cfg = RunConfig(
-        side_a=SideConfig(prompt=_load_prompt(prompt_a), model_cfg=model_cfg),
-        side_b=SideConfig(prompt=_load_prompt(prompt_b), model_cfg=model_cfg),
+        side_a=SideConfig(prompt=_load_prompt(prompt_a), model_cfg=model_cfg_a),
+        side_b=SideConfig(prompt=_load_prompt(prompt_b), model_cfg=model_cfg_b),
         cases=_load_cases(inputs),
         concurrency=concurrency,
         semantic=not no_semantic,
