@@ -44,6 +44,33 @@ async def _call_ollama(
     return resp.json()["message"]["content"]
 
 
+async def check_models_available(
+    client: httpx.AsyncClient,
+    base_url: str,
+    models: list[str],
+) -> None:
+    """Raises RuntimeError if any requested model is not pulled in Ollama."""
+    try:
+        resp = await client.get(f"{base_url}/api/tags", timeout=5.0)
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        raise RuntimeError(
+            f"Cannot connect to Ollama at {base_url}.\n" f"Start it with:  ollama serve"
+        ) from None
+
+    pulled = {m["name"].split(":")[0] for m in resp.json().get("models", [])}
+    # also keep full names like "llama3.1:8b"
+    pulled_full = {m["name"] for m in resp.json().get("models", [])}
+    available = pulled | pulled_full
+
+    missing = [
+        m for m in models if m not in available and m.split(":")[0] not in pulled
+    ]
+    if missing:
+        missing_str = "\n".join(f"  ollama pull {m}" for m in missing)
+        raise RuntimeError(f"Model(s) not found in Ollama:\n{missing_str}")
+
+
 async def run_case(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,

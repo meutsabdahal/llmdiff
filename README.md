@@ -111,6 +111,20 @@ llmdiff \
   --model llama3.2
 ```
 
+### Compare two models (same prompt)
+
+```bash
+llmdiff \
+  --prompt-a prompts/system.txt \
+  --prompt-b prompts/system.txt \
+  --model-a llama3.2 \
+  --model-b mistral \
+  --inputs tests/cases.json
+```
+
+Useful when you want to benchmark models against each other on your actual use case
+rather than a generic benchmark.
+
 ### Filter and threshold
 
 ```bash
@@ -243,16 +257,6 @@ LLMs are non-deterministic. Two runs of the same prompt on the same model will p
 - Use `temperature=0.0` where possible
 - Run the same diff multiple times and compare summary trends
 - Focus on the summary trends across many test cases rather than individual results
-
----
-
-## Roadmap
-
-- [ ] `--runs N` flag for averaging across multiple completions
-- [ ] Sentence-level diff for long responses
-- [ ] HTML report output
-- [ ] `llmdiff.yaml` config file support
-- [ ] GitHub Actions example workflow
 
 ---
 

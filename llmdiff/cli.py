@@ -16,7 +16,7 @@ from rich.progress import (
 )
 
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig
-from llmdiff.runner import run_case
+from llmdiff.runner import run_case, check_models_available
 from llmdiff.differ import compute_diff
 from llmdiff.metrics import semantic_similarity, compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
@@ -55,47 +55,48 @@ def main(
     prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
     prompt_b: Path = typer.Option(..., "--prompt-b", help="System prompt file B"),
     inputs: Path = typer.Option(..., "--inputs", help="Test cases JSON file"),
+    # --- model flags ---
     model: str = typer.Option(
         "llama3.2",
         "--model",
-        help="Model for both sides (unless overridden)",
+        help="Model for both sides (ignored if --model-a / --model-b are set)",
     ),
-    model_a: Optional[str] = typer.Option(None, "--model-a", help="Model for side A"),
-    model_b: Optional[str] = typer.Option(None, "--model-b", help="Model for side B"),
+    model_a: Optional[str] = typer.Option(
+        None, "--model-a", help="Model for side A (overrides --model)"
+    ),
+    model_b: Optional[str] = typer.Option(
+        None, "--model-b", help="Model for side B (overrides --model)"
+    ),
     base_url: str = typer.Option(
         "http://localhost:11434", "--base-url", help="Ollama base URL"
     ),
     temperature: Optional[float] = typer.Option(None, "--temperature"),
-    concurrency: int = typer.Option(3, "--concurrency", help="Parallel case limit"),
-    no_semantic: bool = typer.Option(
-        False, "--no-semantic", help="Skip embedding similarity"
-    ),
-    filter_changed: bool = typer.Option(
-        False, "--filter", help="Only show changed cases"
-    ),
-    threshold: Optional[float] = typer.Option(
-        None, "--threshold", help="Flag as changed if similarity drops below this value"
-    ),
-    output_format: str = typer.Option(
-        "inline", "--format", help="inline | side-by-side | json"
-    ),
-    output: Optional[Path] = typer.Option(
-        None, "--output", help="Save JSON report to file"
-    ),
+    concurrency: int = typer.Option(3, "--concurrency"),
+    no_semantic: bool = typer.Option(False, "--no-semantic"),
+    filter_changed: bool = typer.Option(False, "--filter"),
+    threshold: Optional[float] = typer.Option(None, "--threshold"),
+    output_format: str = typer.Option("inline", "--format"),
+    output: Optional[Path] = typer.Option(None, "--output"),
 ):
     """
-    Compare two system prompts across a set of test cases using a local Ollama model.
+    Compare two LLM prompt configurations across a set of test cases.
 
-    Example:\n
-        llmdiff --prompt-a v1.txt --prompt-b v2.txt --inputs cases.json --model llama3.2
+    Compare two prompts on the same model:\n
+        llmdiff --prompt-a v1.txt --prompt-b v2.txt --inputs cases.json --model llama3.2\n
+
+    Compare two models on the same prompt:\n
+        llmdiff --prompt-a prompt.txt --prompt-b prompt.txt --model-a llama3.2 --model-b mistral --inputs cases.json
     """
+    resolved_model_a = model_a or model
+    resolved_model_b = model_b or model
+
     model_cfg_a = ModelConfig(
-        model=model_a or model,
+        model=resolved_model_a,
         base_url=base_url,
         temperature=temperature,
     )
     model_cfg_b = ModelConfig(
-        model=model_b or model,
+        model=resolved_model_b,
         base_url=base_url,
         temperature=temperature,
     )
@@ -110,26 +111,31 @@ def main(
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
     )
-
     asyncio.run(_run(run_cfg, output_path=output))
 
 
 async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
-    label_a = f"prompt-a / {cfg.side_a.model_cfg.model}"
-    label_b = f"prompt-b / {cfg.side_b.model_cfg.model}"
+    # Build labels that are informative for both use cases:
+    # - same model, different prompts: show "prompt-a / llama3.2" vs "prompt-b / llama3.2"
+    # - different models, same prompt: show "prompt-a / llama3.2" vs "prompt-b / mistral"
+    label_a = f"prompt-a  [{cfg.side_a.model_cfg.model}]"
+    label_b = f"prompt-b  [{cfg.side_b.model_cfg.model}]"
 
-    # Check Ollama is reachable before starting
+    # Collect unique models (could be 1 or 2)
+    models_needed = list(
+        {
+            cfg.side_a.model_cfg.model,
+            cfg.side_b.model_cfg.model,
+        }
+    )
+
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"{cfg.side_a.model_cfg.base_url}/api/tags", timeout=5.0
+            await check_models_available(
+                client, cfg.side_a.model_cfg.base_url, models_needed
             )
-            r.raise_for_status()
-    except Exception:
-        console.print(
-            f"[red]Error:[/red] Cannot reach Ollama at "
-            f"{cfg.side_a.model_cfg.base_url}. Is it running?"
-        )
+    except RuntimeError as e:
+        console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
 
     results = []
