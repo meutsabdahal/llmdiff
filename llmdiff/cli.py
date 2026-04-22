@@ -4,11 +4,19 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import typer
 from rich.console import Console
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+)
 
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig
-from llmdiff.runner import run_all
+from llmdiff.runner import run_case
 from llmdiff.differ import compute_diff
 from llmdiff.metrics import semantic_similarity, compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
@@ -52,14 +60,21 @@ def main(
     ),
     temperature: Optional[float] = typer.Option(None, "--temperature"),
     concurrency: int = typer.Option(3, "--concurrency", help="Parallel case limit"),
-    no_semantic: bool = typer.Option(False, "--no-semantic", help="Skip embedding similarity"),
-    filter_changed: bool = typer.Option(False, "--filter", help="Only show changed cases"),
-    threshold: Optional[float] = typer.Option(
-        None, "--threshold",
-        help="Flag as changed if similarity drops below this value"
+    no_semantic: bool = typer.Option(
+        False, "--no-semantic", help="Skip embedding similarity"
     ),
-    output_format: str = typer.Option("inline", "--format", help="inline | side-by-side | json"),
-    output: Optional[Path] = typer.Option(None, "--output", help="Save JSON report to file"),
+    filter_changed: bool = typer.Option(
+        False, "--filter", help="Only show changed cases"
+    ),
+    threshold: Optional[float] = typer.Option(
+        None, "--threshold", help="Flag as changed if similarity drops below this value"
+    ),
+    output_format: str = typer.Option(
+        "inline", "--format", help="inline | side-by-side | json"
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", help="Save JSON report to file"
+    ),
 ):
     """
     Compare two system prompts across a set of test cases using a local Ollama model.
@@ -93,7 +108,6 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
 
     # Check Ollama is reachable before starting
     try:
-        import httpx
         async with httpx.AsyncClient() as client:
             r = await client.get(
                 f"{cfg.side_a.model_cfg.base_url}/api/tags", timeout=5.0
@@ -106,29 +120,34 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
         )
         raise typer.Exit(1)
 
-    with console.status(f"[dim]Running {len(cfg.cases)} cases...[/dim]"):
-        try:
-            raw_results = await run_all(cfg)
-        except RuntimeError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(1)
-
     results = []
-    for case, resp_a, resp_b in raw_results:
-        sim = None
-        if cfg.semantic:
-            loop = asyncio.get_event_loop()
-            sim = await loop.run_in_executor(
-                None, semantic_similarity, resp_a, resp_b
+    semaphore = asyncio.Semaphore(cfg.concurrency)
+    async with httpx.AsyncClient() as client:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task(
+                f"Running {len(cfg.cases)} cases...", total=len(cfg.cases)
             )
-        result = compute_diff(
-            case_id=case.id,
-            response_a=resp_a,
-            response_b=resp_b,
-            similarity=sim,
-            threshold=cfg.threshold,
-        )
-        results.append(result)
+
+            async def run_and_track(case: TestCase):
+                result = await run_one(cfg, case, client, semaphore)
+                progress.advance(task, 1)
+                progress.update(task, description=f"Done: {case.id}")
+                return result
+
+            try:
+                results = await asyncio.gather(
+                    *[run_and_track(case) for case in cfg.cases]
+                )
+            except RuntimeError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(1)
 
     display = [r for r in results if r.changed] if cfg.filter_changed else results
     summary = compute_summary(results)
@@ -150,3 +169,26 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
     if output_path:
         output_path.write_text(render_json(results, summary))
         console.print(f"[dim]JSON report saved to {output_path}[/dim]")
+
+
+async def run_one(
+    cfg: RunConfig,
+    case: TestCase,
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+):
+    """Run one case, then compute diff and semantic similarity if enabled."""
+    resp_a, resp_b = await run_case(client, semaphore, cfg, case)
+
+    sim = None
+    if cfg.semantic:
+        loop = asyncio.get_running_loop()
+        sim = await loop.run_in_executor(None, semantic_similarity, resp_a, resp_b)
+
+    return compute_diff(
+        case_id=case.id,
+        response_a=resp_a,
+        response_b=resp_b,
+        similarity=sim,
+        threshold=cfg.threshold,
+    )
