@@ -6,28 +6,21 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["llm", "prompt-engineering", "cli", "developer-tools", "ollama"]
-
-dependencies = [
-    "typer>=0.12",
-    "pydantic>=2.0",
-    "httpx>=0.27",
-    "rich>=13.0",
-    "sentence-transformers>=3.0",
-    "scikit-learn>=1.3",
+authors = [{ name = "Utsab Dahal", email = "your@email.com" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-[project.scripts]
-llmdiff = "llmdiff.cli:app"
-
-[tool.hatch.build.targets.wheel]
-packages = ["llmdiff"]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.uv]
-dev-dependencies = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-]
+[project.urls]
+Homepage = "https://github.com/meutsabdahal/llmdiff"
+Repository = "https://github.com/meutsabdahal/llmdiff"
+Issues = "https://github.com/meutsabdahal/llmdiff/issues"
