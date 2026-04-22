@@ -6,6 +6,8 @@
 
 Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted — token by token, with semantic similarity scores.
 
+![llmdiff demo](assets/demo.gif)
+
 ```
 $ llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt \
           --inputs tests/cases.json --model llama3.2
