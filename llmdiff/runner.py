@@ -9,7 +9,6 @@ async def _call_ollama(
     side: SideConfig,
     messages: list[dict],
 ) -> str:
-    """Single Ollama /api/chat call. Returns the assistant text."""
     payload = {
         "model": side.model_cfg.model,
         "stream": False,
@@ -22,16 +21,27 @@ async def _call_ollama(
     if side.model_cfg.temperature is not None:
         payload["options"]["temperature"] = side.model_cfg.temperature
 
-    resp = await client.post(
-        f"{side.model_cfg.base_url}/api/chat",
-        json=payload,
-        timeout=120.0,  # local models can be slow on first load
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = await client.post(
+            f"{side.model_cfg.base_url}/api/chat",
+            json=payload,
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise RuntimeError(
+                f"Model '{side.model_cfg.model}' not found in Ollama.\n"
+                f"Pull it first:  ollama pull {side.model_cfg.model}"
+            ) from None
+        raise
+    except httpx.ConnectError:
+        raise RuntimeError(
+            f"Cannot connect to Ollama at {side.model_cfg.base_url}.\n"
+            f"Is it running?  ollama serve"
+        ) from None
 
-    # Ollama wraps the response in {"message": {"role": "...", "content": "..."}}
-    return data["message"]["content"]
+    return resp.json()["message"]["content"]
 
 
 async def run_case(

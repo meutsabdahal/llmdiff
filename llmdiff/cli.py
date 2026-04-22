@@ -107,7 +107,11 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
         raise typer.Exit(1)
 
     with console.status(f"[dim]Running {len(cfg.cases)} cases...[/dim]"):
-        raw_results = await run_all(cfg)
+        try:
+            raw_results = await run_all(cfg)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
 
     results = []
     for case, resp_a, resp_b in raw_results:
