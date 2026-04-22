@@ -70,7 +70,13 @@ def main(
     base_url: str = typer.Option(
         "http://localhost:11434", "--base-url", help="Ollama base URL"
     ),
-    temperature: Optional[float] = typer.Option(None, "--temperature"),
+    temperature_a: Optional[float] = typer.Option(None, "--temperature-a"),
+    temperature_b: Optional[float] = typer.Option(None, "--temperature-b"),
+    temperature: Optional[float] = typer.Option(
+        None,
+        "--temperature",
+        help="Temperature for both sides (overridden by --temperature-a / --temperature-b)",
+    ),
     concurrency: int = typer.Option(3, "--concurrency"),
     no_semantic: bool = typer.Option(False, "--no-semantic"),
     filter_changed: bool = typer.Option(False, "--filter"),
@@ -99,12 +105,12 @@ def main(
     model_cfg_a = ModelConfig(
         model=resolved_model_a,
         base_url=base_url,
-        temperature=temperature,
+        temperature=temperature_a if temperature_a is not None else temperature,
     )
     model_cfg_b = ModelConfig(
         model=resolved_model_b,
         base_url=base_url,
-        temperature=temperature,
+        temperature=temperature_b if temperature_b is not None else temperature,
     )
 
     run_cfg = RunConfig(

@@ -52,7 +52,10 @@ The diff framing maps directly to how developers already think about code change
 ## Install
 
 ```bash
+git clone https://github.com/meutsabdahal/llmdiff
+cd llmdiff
 uv sync
+uv run llmdiff --help
 ```
 
 Requires Python 3.10+. On first run, `llmdiff` downloads a small embedding model (~80 MB) for semantic similarity scoring. This is a one-time download.
