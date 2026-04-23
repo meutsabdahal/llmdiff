@@ -1,10 +1,6 @@
 from __future__ import annotations
 from rich.console import Console
-from rich.panel import Panel
 from rich.text import Text
-from rich.table import Table
-from rich.rule import Rule
-from rich import box
 
 from llmdiff.differ import DiffResult
 from llmdiff.metrics import Summary
@@ -28,10 +24,20 @@ def _changed_badge(changed: bool) -> Text:
     return Text("unchanged", style="dim green")
 
 
+def _truncate_lines(lines: list[str], max_lines: int) -> tuple[list[str], int]:
+    if max_lines == 0:
+        return lines, 0
+    if len(lines) <= max_lines:
+        return lines, 0
+    return lines[:max_lines], len(lines) - max_lines
+
+
 def render_case_inline(
     result: DiffResult,
     label_a: str = "A",
     label_b: str = "B",
+    max_response_lines: int = 40,
+    max_diff_lines: int = 120,
 ):
     sim = result.similarity
     sim_str = f"{sim:.2f}" if sim is not None else "n/a"
@@ -50,8 +56,17 @@ def render_case_inline(
         highlight=False,
     )
     console.print()
-    for line in result.response_a.splitlines():
+    a_lines, a_hidden = _truncate_lines(
+        result.response_a.splitlines(),
+        max_response_lines,
+    )
+    for line in a_lines:
         console.print(f"  {line}", highlight=False)
+    if a_hidden:
+        console.print(
+            f"  [dim]... ({a_hidden} lines hidden; use --max-lines 0 to show all)[/dim]",
+            highlight=False,
+        )
     console.print()
 
     # Version B
@@ -60,17 +75,31 @@ def render_case_inline(
         highlight=False,
     )
     console.print()
-    for line in result.response_b.splitlines():
+    b_lines, b_hidden = _truncate_lines(
+        result.response_b.splitlines(),
+        max_response_lines,
+    )
+    for line in b_lines:
         console.print(f"  {line}", highlight=False)
+    if b_hidden:
+        console.print(
+            f"  [dim]... ({b_hidden} lines hidden; use --max-lines 0 to show all)[/dim]",
+            highlight=False,
+        )
     console.print()
 
     # Diff
     if result.unified_diff:
         console.print(" [dim]Diff[/dim]")
         console.print()
-        for line in result.unified_diff:
-            if line.startswith("+++") or line.startswith("---"):
-                continue
+        diff_lines = [
+            line
+            for line in result.unified_diff
+            if not (line.startswith("+++") or line.startswith("---"))
+        ]
+        diff_lines, diff_hidden = _truncate_lines(diff_lines, max_diff_lines)
+
+        for line in diff_lines:
             if line.startswith("@@"):
                 console.print(f"  [dim]{line}[/dim]", highlight=False)
             elif line.startswith("+"):
@@ -79,6 +108,12 @@ def render_case_inline(
                 console.print(f"  [red]{line}[/red]", highlight=False)
             else:
                 console.print(f"  {line}", highlight=False)
+        if diff_hidden:
+            console.print(
+                "  [dim]... "
+                f"({diff_hidden} diff lines hidden; use --max-diff-lines 0 to show all)[/dim]",
+                highlight=False,
+            )
         console.print()
 
     # Metrics footer

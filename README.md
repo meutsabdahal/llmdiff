@@ -56,11 +56,18 @@ The diff framing maps directly to how developers already think about code change
 ```bash
 git clone https://github.com/meutsabdahal/llmdiff
 cd llmdiff
-uv sync
+uv sync --all-extras
 uv run llmdiff --help
 ```
 
 Requires Python 3.10+. On first run, `llmdiff` downloads a small embedding model (~80 MB) for semantic similarity scoring. This is a one-time download.
+
+Prefer a lighter install without semantic scoring?
+
+```bash
+uv sync
+uv run llmdiff ... --no-semantic
+```
 
 ---
 
@@ -154,6 +161,16 @@ llmdiff ... --format html --output report.html   # save HTML report
 
 ```bash
 llmdiff ... --no-semantic
+```
+
+### Large output controls (inline format)
+
+```bash
+# Show at most 40 response lines and 120 diff lines per case (defaults)
+llmdiff ... --max-lines 40 --max-diff-lines 120
+
+# Disable truncation for full output
+llmdiff ... --max-lines 0 --max-diff-lines 0
 ```
 
 ### Use a custom Ollama endpoint

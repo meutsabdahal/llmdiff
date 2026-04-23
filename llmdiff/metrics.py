@@ -2,6 +2,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import Lock
 
+_MISSING_SEMANTIC_DEPS_MSG = (
+    "Semantic scoring dependencies are not installed. "
+    "Install with 'uv sync --all-extras' (source checkout) or "
+    "'pip install llmdiff[semantic]' (package install), or run with --no-semantic."
+)
+
 _model = None
 _model_lock = Lock()
 
@@ -12,7 +18,11 @@ def _get_model():
         with _model_lock:
             if _model is None:
                 from rich.console import Console
-                from sentence_transformers import SentenceTransformer
+
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except Exception:
+                    raise RuntimeError(_MISSING_SEMANTIC_DEPS_MSG) from None
 
                 Console().print(
                     "[dim]Loading embedding model (first run only)...[/dim]"
@@ -21,16 +31,49 @@ def _get_model():
     return _model
 
 
-def semantic_similarity(a: str, b: str) -> float:
-    """Returns cosine similarity [0, 1] between two strings."""
-    from sklearn.metrics.pairwise import cosine_similarity
-    import numpy as np
+def _cosine_from_normalized(a, b) -> float:
+    if len(a) != len(b):
+        raise RuntimeError("Embedding vectors have mismatched dimensions.")
+    score = sum(float(x) * float(y) for x, y in zip(a, b))
+    # clamp to [0, 1] — floating point can produce tiny negatives
+    return max(0.0, min(1.0, float(score)))
+
+
+def semantic_similarities(
+    pairs: list[tuple[str, str]],
+    batch_size: int = 24,
+) -> list[float]:
+    """Returns cosine similarity [0, 1] for each (a, b) pair."""
+    if not pairs:
+        return []
+
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
 
     model = _get_model()
-    embeddings = model.encode([a, b], normalize_embeddings=True)
-    score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0])
-    # clamp to [0, 1] — floating point can produce tiny negatives
-    return max(0.0, min(1.0, score))
+    scores: list[float] = []
+
+    for i in range(0, len(pairs), batch_size):
+        chunk = pairs[i : i + batch_size]
+        texts: list[str] = []
+        for a, b in chunk:
+            texts.extend((a, b))
+
+        embeddings = model.encode(texts, normalize_embeddings=True)
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                "Embedding model returned an unexpected number of vectors."
+            )
+
+        for j in range(0, len(embeddings), 2):
+            scores.append(_cosine_from_normalized(embeddings[j], embeddings[j + 1]))
+
+    return scores
+
+
+def semantic_similarity(a: str, b: str) -> float:
+    """Returns cosine similarity [0, 1] between two strings."""
+    return semantic_similarities([(a, b)], batch_size=1)[0]
 
 
 @dataclass

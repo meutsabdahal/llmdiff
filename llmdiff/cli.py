@@ -21,7 +21,7 @@ from rich.progress import (
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
 from llmdiff.runner import run_case, check_models_available
 from llmdiff.differ import compute_diff
-from llmdiff.metrics import semantic_similarity, compute_summary
+from llmdiff.metrics import semantic_similarity, semantic_similarities, compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
 from llmdiff.renderers.json_ import render_json
 from llmdiff.renderers.html import render_html
@@ -174,6 +174,12 @@ def main(
         help="Maximum number of test cases to run concurrently (must be >= 1)",
     ),
     no_semantic: bool = typer.Option(False, "--no-semantic"),
+    semantic_batch_size: int = typer.Option(
+        24,
+        "--semantic-batch-size",
+        min=1,
+        help="Number of response pairs to score per embedding batch",
+    ),
     filter_changed: bool = typer.Option(False, "--filter"),
     threshold: Optional[float] = typer.Option(
         None,
@@ -181,6 +187,18 @@ def main(
         min=0.0,
         max=1.0,
         help="Mark results as changed when similarity is below this value (0.0-1.0)",
+    ),
+    max_lines: int = typer.Option(
+        40,
+        "--max-lines",
+        min=0,
+        help="Max response lines per side in inline output (0 = no limit)",
+    ),
+    max_diff_lines: int = typer.Option(
+        120,
+        "--max-diff-lines",
+        min=0,
+        help="Max diff lines per case in inline output (0 = no limit)",
     ),
     output_format: OutputFormat = typer.Option(
         OutputFormat.INLINE,
@@ -231,7 +249,10 @@ def main(
         cases=_load_cases(inputs),
         concurrency=concurrency,
         semantic=not no_semantic,
+        semantic_batch_size=semantic_batch_size,
         output_format=output_format,
+        max_response_lines=max_lines,
+        max_diff_lines=max_diff_lines,
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
     )
@@ -264,6 +285,8 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
 
     results = []
     semaphore = asyncio.Semaphore(cfg.concurrency)
+    total_steps = len(cfg.cases) + (1 if cfg.semantic else 0)
+
     async with httpx.AsyncClient() as client:
         with Progress(
             SpinnerColumn(),
@@ -274,19 +297,60 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
             transient=True,
         ) as progress:
             task = progress.add_task(
-                f"Running {len(cfg.cases)} cases...", total=len(cfg.cases)
+                f"Running {len(cfg.cases)} cases...", total=total_steps
             )
 
-            async def run_and_track(case: TestCase):
-                result = await run_one(cfg, case, client, semaphore)
-                progress.advance(task, 1)
-                progress.update(task, description=f"Done: {case.id}")
-                return result
-
             try:
-                results = await asyncio.gather(
-                    *[run_and_track(case) for case in cfg.cases]
-                )
+                if cfg.semantic:
+
+                    async def run_case_and_track(case: TestCase):
+                        resp_a, resp_b = await run_case(client, semaphore, cfg, case)
+                        progress.advance(task, 1)
+                        progress.update(task, description=f"Done: {case.id}")
+                        return case, resp_a, resp_b
+
+                    responses = await asyncio.gather(
+                        *[run_case_and_track(case) for case in cfg.cases]
+                    )
+
+                    progress.update(task, description="Scoring semantic similarity...")
+                    pairs = [(resp_a, resp_b) for _, resp_a, resp_b in responses]
+                    loop = asyncio.get_running_loop()
+                    similarities = await loop.run_in_executor(
+                        None,
+                        semantic_similarities,
+                        pairs,
+                        cfg.semantic_batch_size,
+                    )
+                    if len(similarities) != len(responses):
+                        raise RuntimeError(
+                            "Semantic scoring returned an unexpected number of scores."
+                        )
+
+                    progress.advance(task, 1)
+                    progress.update(task, description="Semantic scoring complete")
+
+                    for (case, resp_a, resp_b), sim in zip(responses, similarities):
+                        results.append(
+                            compute_diff(
+                                case_id=case.id,
+                                response_a=resp_a,
+                                response_b=resp_b,
+                                similarity=sim,
+                                threshold=cfg.threshold,
+                            )
+                        )
+                else:
+
+                    async def run_and_track(case: TestCase):
+                        result = await run_one(cfg, case, client, semaphore)
+                        progress.advance(task, 1)
+                        progress.update(task, description=f"Done: {case.id}")
+                        return result
+
+                    results = await asyncio.gather(
+                        *[run_and_track(case) for case in cfg.cases]
+                    )
             except RuntimeError as e:
                 console.print(f"[red]Error:[/red] {e}")
                 raise typer.Exit(1)
@@ -313,7 +377,13 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
         return
 
     for result in display:
-        render_case_inline(result, label_a=label_a, label_b=label_b)
+        render_case_inline(
+            result,
+            label_a=label_a,
+            label_b=label_b,
+            max_response_lines=cfg.max_response_lines,
+            max_diff_lines=cfg.max_diff_lines,
+        )
 
     render_summary(summary)
 

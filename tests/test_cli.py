@@ -121,7 +121,7 @@ async def test_run_filters_unchanged_cases(monkeypatch):
     rendered_case_ids = []
     rendered_summary = []
 
-    def fake_render_case_inline(result, label_a, label_b):
+    def fake_render_case_inline(result, label_a, label_b, **_kwargs):
         rendered_case_ids.append(result.case_id)
 
     def fake_render_summary(summary):
@@ -135,6 +135,66 @@ async def test_run_filters_unchanged_cases(monkeypatch):
     await cli._run(cfg)
 
     assert rendered_case_ids == ["changed"]
+    assert len(rendered_summary) == 1
+    assert rendered_summary[0].total == 2
+    assert rendered_summary[0].changed == 1
+
+
+@pytest.mark.asyncio
+async def test_run_uses_batched_semantic_scoring(monkeypatch):
+    side_a = SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2"))
+    side_b = SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2"))
+    cfg = RunConfig(
+        side_a=side_a,
+        side_b=side_b,
+        cases=[
+            PromptCase(id="same", user="hello"),
+            PromptCase(id="diff", user="hello"),
+        ],
+        semantic=True,
+        semantic_batch_size=2,
+        output_format=OutputFormat.INLINE,
+        filter_changed=False,
+    )
+
+    async def fake_check_models_available(*_args, **_kwargs):
+        return None
+
+    async def fake_run_case(_client, _semaphore, _cfg, case):
+        if case.id == "same":
+            return "same output", "same output"
+        return "left output", "right output"
+
+    semantic_calls = {}
+
+    def fake_semantic_similarities(pairs, batch_size):
+        semantic_calls["pairs"] = pairs
+        semantic_calls["batch_size"] = batch_size
+        return [0.99, 0.22]
+
+    rendered_case_ids = []
+    rendered_summary = []
+
+    def fake_render_case_inline(result, label_a, label_b, **_kwargs):
+        rendered_case_ids.append(result.case_id)
+
+    def fake_render_summary(summary):
+        rendered_summary.append(summary)
+
+    monkeypatch.setattr(cli, "check_models_available", fake_check_models_available)
+    monkeypatch.setattr(cli, "run_case", fake_run_case)
+    monkeypatch.setattr(cli, "semantic_similarities", fake_semantic_similarities)
+    monkeypatch.setattr(cli, "render_case_inline", fake_render_case_inline)
+    monkeypatch.setattr(cli, "render_summary", fake_render_summary)
+
+    await cli._run(cfg)
+
+    assert semantic_calls["batch_size"] == 2
+    assert semantic_calls["pairs"] == [
+        ("same output", "same output"),
+        ("left output", "right output"),
+    ]
+    assert rendered_case_ids == ["same", "diff"]
     assert len(rendered_summary) == 1
     assert rendered_summary[0].total == 2
     assert rendered_summary[0].changed == 1

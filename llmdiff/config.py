@@ -60,7 +60,10 @@ class RunConfig(BaseModel):
     cases: list[TestCase]
     concurrency: int = 3  # conservative default for local models
     semantic: bool = True
+    semantic_batch_size: int = 24
     output_format: OutputFormat = OutputFormat.INLINE
+    max_response_lines: int = 40
+    max_diff_lines: int = 120
     filter_changed: bool = False
     threshold: float | None = None
 
@@ -76,6 +79,20 @@ class RunConfig(BaseModel):
     def concurrency_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("concurrency must be at least 1")
+        return v
+
+    @field_validator("semantic_batch_size")
+    @classmethod
+    def semantic_batch_size_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("semantic_batch_size must be at least 1")
+        return v
+
+    @field_validator("max_response_lines", "max_diff_lines")
+    @classmethod
+    def display_limits_must_be_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("display line limits must be 0 or greater")
         return v
 
     @field_validator("threshold")

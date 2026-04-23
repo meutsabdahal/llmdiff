@@ -88,3 +88,23 @@ def test_context_role_and_content_are_validated():
             user="hello",
             context=[{"role": "user", "content": "   "}],
         )
+
+
+def test_semantic_batch_size_must_be_positive():
+    cfg = _base_config()
+    cfg["semantic_batch_size"] = 0
+
+    with pytest.raises(ValidationError):
+        RunConfig(**cfg)
+
+
+def test_display_limits_must_be_non_negative():
+    cfg = _base_config()
+    cfg["max_response_lines"] = -1
+    with pytest.raises(ValidationError):
+        RunConfig(**cfg)
+
+    cfg = _base_config()
+    cfg["max_diff_lines"] = -1
+    with pytest.raises(ValidationError):
+        RunConfig(**cfg)
