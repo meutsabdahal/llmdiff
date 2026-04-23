@@ -17,7 +17,7 @@ from rich.progress import (
     TaskProgressColumn,
 )
 
-from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig
+from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
 from llmdiff.runner import run_case, check_models_available
 from llmdiff.differ import compute_diff
 from llmdiff.metrics import semantic_similarity, compute_summary
@@ -128,11 +128,27 @@ def main(
         "--temperature",
         help="Temperature for both sides (overridden by --temperature-a / --temperature-b)",
     ),
-    concurrency: int = typer.Option(3, "--concurrency"),
+    concurrency: int = typer.Option(
+        3,
+        "--concurrency",
+        min=1,
+        help="Maximum number of test cases to run concurrently (must be >= 1)",
+    ),
     no_semantic: bool = typer.Option(False, "--no-semantic"),
     filter_changed: bool = typer.Option(False, "--filter"),
-    threshold: Optional[float] = typer.Option(None, "--threshold"),
-    output_format: str = typer.Option("inline", "--format"),
+    threshold: Optional[float] = typer.Option(
+        None,
+        "--threshold",
+        min=0.0,
+        max=1.0,
+        help="Mark results as changed when similarity is below this value (0.0-1.0)",
+    ),
+    output_format: OutputFormat = typer.Option(
+        OutputFormat.INLINE,
+        "--format",
+        case_sensitive=False,
+        help="Output format: inline, json, or html",
+    ),
     output: Optional[Path] = typer.Option(None, "--output"),
 ):
     """
@@ -145,6 +161,10 @@ def main(
         llmdiff --prompt-a prompt.txt --prompt-b prompt.txt --model-a llama3.2 --model-b mistral --inputs cases.json
     """
     _bootstrap_runtime_env()
+
+    if output is not None and output_format == OutputFormat.INLINE:
+        typer.echo("Error: --output requires --format json or --format html.", err=True)
+        raise typer.Exit(1)
 
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
@@ -235,13 +255,19 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
     display = [r for r in results if r.changed] if cfg.filter_changed else results
     summary = compute_summary(results)
 
-    if cfg.output_format == "json":
+    if cfg.output_format == OutputFormat.JSON:
         out = render_json(results, summary)
         if output_path:
-            if output_path.suffix.lower() == ".html":
-                output_path.write_text(render_html(results, summary))
-            else:
-                output_path.write_text(out)
+            output_path.write_text(out)
+            console.print(f"[dim]Report saved to {output_path}[/dim]")
+        else:
+            print(out)
+        return
+
+    if cfg.output_format == OutputFormat.HTML:
+        out = render_html(results, summary)
+        if output_path:
+            output_path.write_text(out)
             console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
@@ -251,13 +277,6 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
         render_case_inline(result, label_a=label_a, label_b=label_b)
 
     render_summary(summary)
-
-    if output_path:
-        if output_path.suffix.lower() == ".html":
-            output_path.write_text(render_html(results, summary))
-        else:
-            output_path.write_text(render_json(results, summary))
-        console.print(f"[dim]Report saved to {output_path}[/dim]")
 
 
 async def run_one(

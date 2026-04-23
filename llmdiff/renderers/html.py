@@ -31,7 +31,9 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
             "changed": summary.changed,
             "unchanged": summary.unchanged,
             "avg_similarity": (
-                round(summary.avg_similarity, 4) if summary.avg_similarity else None
+                round(summary.avg_similarity, 4)
+                if summary.avg_similarity is not None
+                else None
             ),
             "most_diverged": summary.most_diverged,
             "least_changed": summary.least_changed,

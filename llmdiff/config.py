@@ -1,6 +1,12 @@
 from __future__ import annotations
+from enum import Enum
 from pydantic import BaseModel, field_validator
-from typing import Literal
+
+
+class OutputFormat(str, Enum):
+    INLINE = "inline"
+    JSON = "json"
+    HTML = "html"
 
 
 class ModelConfig(BaseModel):
@@ -34,6 +40,20 @@ class RunConfig(BaseModel):
     cases: list[TestCase]
     concurrency: int = 3  # conservative default for local models
     semantic: bool = True
-    output_format: Literal["inline", "side-by-side", "json"] = "inline"
+    output_format: OutputFormat = OutputFormat.INLINE
     filter_changed: bool = False
     threshold: float | None = None
+
+    @field_validator("concurrency")
+    @classmethod
+    def concurrency_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("concurrency must be at least 1")
+        return v
+
+    @field_validator("threshold")
+    @classmethod
+    def threshold_range(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("threshold must be between 0.0 and 1.0")
+        return v
