@@ -40,8 +40,8 @@ Issues = "https://github.com/meutsabdahal/llmdiff/issues"
 [project.scripts]
 llmdiff = "llmdiff.cli:app"
 
-[tool.uv]
-dev-dependencies = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["llmdiff"]

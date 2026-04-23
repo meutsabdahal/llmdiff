@@ -145,7 +145,9 @@ llmdiff ... --threshold 0.5
 ```bash
 llmdiff ... --format inline        # default terminal output
 llmdiff ... --format json          # machine-readable, for scripting
-llmdiff ... --output report.json   # save JSON report
+llmdiff ... --format html          # standalone HTML report
+llmdiff ... --format json --output report.json   # save JSON report
+llmdiff ... --format html --output report.html   # save HTML report
 ```
 
 ### Skip semantic scoring (faster)
