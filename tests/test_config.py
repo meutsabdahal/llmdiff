@@ -56,3 +56,35 @@ def test_threshold_accepts_bounds_and_output_format_enum():
     cfg["threshold"] = 1.0
     rc = RunConfig(**cfg)
     assert rc.threshold == 1.0
+
+
+def test_cases_must_not_be_empty():
+    cfg = _base_config()
+    cfg["cases"] = []
+
+    with pytest.raises(ValidationError):
+        RunConfig(**cfg)
+
+
+def test_case_id_and_user_must_not_be_empty():
+    with pytest.raises(ValidationError):
+        PromptCase(id="", user="hello")
+
+    with pytest.raises(ValidationError):
+        PromptCase(id="case-1", user="   ")
+
+
+def test_context_role_and_content_are_validated():
+    with pytest.raises(ValidationError):
+        PromptCase(
+            id="case-1",
+            user="hello",
+            context=[{"role": "invalid-role", "content": "hello"}],
+        )
+
+    with pytest.raises(ValidationError):
+        PromptCase(
+            id="case-1",
+            user="hello",
+            context=[{"role": "user", "content": "   "}],
+        )

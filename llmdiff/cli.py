@@ -8,6 +8,7 @@ from typing import Optional
 
 import httpx
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.progress import (
     Progress,
@@ -98,7 +99,45 @@ def _load_cases(path: Path) -> list[TestCase]:
     except json.JSONDecodeError as e:
         typer.echo(f"Error: invalid JSON in {path}: {e}", err=True)
         raise typer.Exit(1)
-    return [TestCase(**c) for c in raw]
+
+    if not isinstance(raw, list):
+        typer.echo(
+            f"Error: {path} must contain a JSON array of test cases.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    cases: list[TestCase] = []
+    for i, case_raw in enumerate(raw):
+        if not isinstance(case_raw, dict):
+            typer.echo(
+                f"Error: test case at index {i} must be a JSON object.",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        try:
+            cases.append(TestCase(**case_raw))
+        except ValidationError as e:
+            first = e.errors()[0]
+            loc = ".".join(str(p) for p in first.get("loc", ()))
+            msg = first.get("msg", "invalid value")
+            case_id = case_raw.get("id")
+            case_hint = f" (id={case_id})" if isinstance(case_id, str) else ""
+            typer.echo(
+                f"Error: invalid test case at index {i}{case_hint}: {loc}: {msg}",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+    if not cases:
+        typer.echo(
+            f"Error: {path} must contain at least one test case.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    return cases
 
 
 @app.command()

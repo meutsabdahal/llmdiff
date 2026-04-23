@@ -1,12 +1,25 @@
 from __future__ import annotations
 from enum import Enum
 from pydantic import BaseModel, field_validator
+from typing import Literal
 
 
 class OutputFormat(str, Enum):
     INLINE = "inline"
     JSON = "json"
     HTML = "html"
+
+
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("content must not be empty")
+        return v
 
 
 class ModelConfig(BaseModel):
@@ -31,7 +44,14 @@ class SideConfig(BaseModel):
 class TestCase(BaseModel):
     id: str
     user: str
-    context: list[dict] | None = None  # prior conversation turns
+    context: list[ChatMessage] | None = None  # prior conversation turns
+
+    @field_validator("id", "user")
+    @classmethod
+    def required_text_fields(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
 
 
 class RunConfig(BaseModel):
@@ -43,6 +63,13 @@ class RunConfig(BaseModel):
     output_format: OutputFormat = OutputFormat.INLINE
     filter_changed: bool = False
     threshold: float | None = None
+
+    @field_validator("cases")
+    @classmethod
+    def cases_must_not_be_empty(cls, v: list[TestCase]) -> list[TestCase]:
+        if not v:
+            raise ValueError("cases must contain at least one test case")
+        return v
 
     @field_validator("concurrency")
     @classmethod
