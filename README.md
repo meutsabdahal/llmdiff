@@ -147,6 +147,22 @@ llmdiff ... --filter
 llmdiff ... --threshold 0.5
 ```
 
+### Native CI failure policies
+
+```bash
+# Fail if any case is marked changed
+llmdiff ... --fail-on-changed
+
+# Fail if run-level average similarity is below 0.80
+llmdiff ... --fail-if-avg-below 0.80
+
+# Fail if any single case falls below 0.60 similarity
+llmdiff ... --fail-if-any-below-threshold 0.60
+```
+
+`--fail-if-avg-below` and `--fail-if-any-below-threshold` require semantic scoring,
+so they cannot be used with `--no-semantic`.
+
 ### Output formats
 
 ```bash
@@ -183,7 +199,7 @@ llmdiff ... --base-url http://localhost:11434 --model llama3.2
 
 ## Use in CI
 
-Fail your pipeline if a prompt change causes significant output drift:
+Gate your pipeline with native failure policies (no `jq` post-processing needed):
 
 ```bash
 llmdiff \
@@ -191,8 +207,18 @@ llmdiff \
   --prompt-b prompts/system_branch.txt \
   --inputs tests/regression.json \
   --model llama3.2 \
-  --threshold 0.6 \
-  --format json | jq '.summary.changed_count'
+  --fail-on-changed
+```
+
+```bash
+# Example: allow minor drift, but fail on low semantic quality
+llmdiff \
+  --prompt-a prompts/system_main.txt \
+  --prompt-b prompts/system_branch.txt \
+  --inputs tests/regression.json \
+  --model llama3.2 \
+  --fail-if-avg-below 0.80 \
+  --fail-if-any-below-threshold 0.60
 ```
 
 ---

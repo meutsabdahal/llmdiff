@@ -28,3 +28,10 @@ jobs:
 
             - name: Run tests
               run: uv run pytest tests/ -v
+
+            - name: Verify CLI failure policy flags
+              run: |
+                  uv run llmdiff --help > /tmp/llmdiff-help.txt
+                  grep -q -- "--fail-on-changed" /tmp/llmdiff-help.txt
+                  grep -q -- "--fail-if-avg-below" /tmp/llmdiff-help.txt
+                  grep -q -- "--fail-if-any-below-threshold" /tmp/llmdiff-help.txt

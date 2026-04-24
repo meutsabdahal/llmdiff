@@ -140,6 +140,58 @@ def _load_cases(path: Path) -> list[TestCase]:
     return cases
 
 
+def _collect_policy_failures(
+    results: list,
+    summary,
+    fail_on_changed: bool,
+    fail_if_avg_below: Optional[float],
+    fail_if_any_below_threshold: Optional[float],
+) -> list[str]:
+    failures: list[str] = []
+
+    if fail_on_changed and summary.changed > 0:
+        failures.append(
+            "--fail-on-changed triggered: "
+            f"{summary.changed}/{summary.total} cases are marked changed."
+        )
+
+    if fail_if_avg_below is not None:
+        if summary.avg_similarity is None:
+            failures.append(
+                "--fail-if-avg-below could not be evaluated because "
+                "semantic similarity scores are unavailable."
+            )
+        elif summary.avg_similarity < fail_if_avg_below:
+            failures.append(
+                "--fail-if-avg-below triggered: "
+                f"avg similarity {summary.avg_similarity:.4f} < {fail_if_avg_below:.4f}."
+            )
+
+    if fail_if_any_below_threshold is not None:
+        scored = [r for r in results if r.similarity is not None]
+        if not scored:
+            failures.append(
+                "--fail-if-any-below-threshold could not be evaluated because "
+                "semantic similarity scores are unavailable."
+            )
+        else:
+            failing = [
+                r
+                for r in scored
+                if r.similarity is not None
+                and r.similarity < fail_if_any_below_threshold
+            ]
+            if failing:
+                worst = min(failing, key=lambda r: r.similarity)
+                failures.append(
+                    "--fail-if-any-below-threshold triggered: "
+                    f"{len(failing)} case(s) below {fail_if_any_below_threshold:.4f}; "
+                    f"worst={worst.case_id} ({worst.similarity:.4f})."
+                )
+
+    return failures
+
+
 @app.command()
 def main(
     prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
@@ -188,6 +240,25 @@ def main(
         max=1.0,
         help="Mark results as changed when similarity is below this value (0.0-1.0)",
     ),
+    fail_on_changed: bool = typer.Option(
+        False,
+        "--fail-on-changed",
+        help="Exit with code 1 when at least one case is marked changed.",
+    ),
+    fail_if_avg_below: Optional[float] = typer.Option(
+        None,
+        "--fail-if-avg-below",
+        min=0.0,
+        max=1.0,
+        help="Exit with code 1 when run-level avg similarity is below this value.",
+    ),
+    fail_if_any_below_threshold: Optional[float] = typer.Option(
+        None,
+        "--fail-if-any-below-threshold",
+        min=0.0,
+        max=1.0,
+        help="Exit with code 1 when any case similarity is below this value.",
+    ),
     max_lines: int = typer.Option(
         40,
         "--max-lines",
@@ -223,6 +294,16 @@ def main(
         typer.echo("Error: --output requires --format json or --format html.", err=True)
         raise typer.Exit(1)
 
+    if no_semantic and (
+        fail_if_avg_below is not None or fail_if_any_below_threshold is not None
+    ):
+        typer.echo(
+            "Error: --fail-if-avg-below and --fail-if-any-below-threshold "
+            "require semantic scoring (remove --no-semantic).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
 
@@ -256,10 +337,24 @@ def main(
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
     )
-    asyncio.run(_run(run_cfg, output_path=output))
+    asyncio.run(
+        _run(
+            run_cfg,
+            output_path=output,
+            fail_on_changed=fail_on_changed,
+            fail_if_avg_below=fail_if_avg_below,
+            fail_if_any_below_threshold=fail_if_any_below_threshold,
+        )
+    )
 
 
-async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
+async def _run(
+    cfg: RunConfig,
+    output_path: Optional[Path] = None,
+    fail_on_changed: bool = False,
+    fail_if_avg_below: Optional[float] = None,
+    fail_if_any_below_threshold: Optional[float] = None,
+):
     # Build labels that are informative for both use cases:
     # - same model, different prompts: show "prompt-a / llama3.2" vs "prompt-b / llama3.2"
     # - different models, same prompt: show "prompt-a / llama3.2" vs "prompt-b / mistral"
@@ -357,6 +452,13 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
 
     display = [r for r in results if r.changed] if cfg.filter_changed else results
     summary = compute_summary(results)
+    policy_failures = _collect_policy_failures(
+        results=results,
+        summary=summary,
+        fail_on_changed=fail_on_changed,
+        fail_if_avg_below=fail_if_avg_below,
+        fail_if_any_below_threshold=fail_if_any_below_threshold,
+    )
 
     if cfg.output_format == OutputFormat.JSON:
         out = render_json(results, summary)
@@ -365,27 +467,29 @@ async def _run(cfg: RunConfig, output_path: Optional[Path] = None):
             console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
-        return
-
-    if cfg.output_format == OutputFormat.HTML:
+    elif cfg.output_format == OutputFormat.HTML:
         out = render_html(results, summary)
         if output_path:
             output_path.write_text(out)
             console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
-        return
+    else:
+        for result in display:
+            render_case_inline(
+                result,
+                label_a=label_a,
+                label_b=label_b,
+                max_response_lines=cfg.max_response_lines,
+                max_diff_lines=cfg.max_diff_lines,
+            )
 
-    for result in display:
-        render_case_inline(
-            result,
-            label_a=label_a,
-            label_b=label_b,
-            max_response_lines=cfg.max_response_lines,
-            max_diff_lines=cfg.max_diff_lines,
-        )
+        render_summary(summary)
 
-    render_summary(summary)
+    if policy_failures:
+        for failure in policy_failures:
+            console.print(f"[red]Failure policy:[/red] {failure}")
+        raise typer.Exit(1)
 
 
 async def run_one(
