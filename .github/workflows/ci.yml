@@ -1,37 +1,56 @@
 name: CI
 
 on:
-    push:
-        branches: [ main ]
-    pull_request:
-        branches: [ main ]
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-    test:
-        runs-on: ubuntu-latest
-        env:
-            FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-        strategy:
-            matrix:
-                python-version: [ "3.10", "3.11", "3.12" ]
-        steps:
-            - uses: actions/checkout@v4
+  test:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    strategy:
+      matrix:
+        python-version: [ "3.10", "3.11", "3.12" ]
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Install uv
-              uses: astral-sh/setup-uv@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
-            - name: Set up Python ${{ matrix.python-version }}
-              run: uv python install ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
-            - name: Install dependencies
-              run: uv sync --all-extras --group dev
+      - name: Install dependencies
+        run: uv sync --all-extras --group dev
 
-            - name: Run tests
-              run: uv run pytest tests/ -v
+      - name: Run tests
+        run: uv run pytest tests/ -v
 
-            - name: Verify CLI failure policy flags
-              run: |
-                  uv run llmdiff --help > /tmp/llmdiff-help.txt
-                  grep -q -- "--fail-on-changed" /tmp/llmdiff-help.txt
-                  grep -q -- "--fail-if-avg-below" /tmp/llmdiff-help.txt
-                  grep -q -- "--fail-if-any-below-threshold" /tmp/llmdiff-help.txt
+      - name: Verify CLI failure policy flags
+        run: |
+          uv run python - <<'PY'
+          import llmdiff.cli as cli
+          from typer.main import get_command
+
+          cmd = get_command(cli.app)
+          flags = set()
+          for param in cmd.params:
+            flags.update(param.opts)
+            flags.update(param.secondary_opts)
+
+          required = {
+            "--fail-on-changed",
+            "--fail-if-avg-below",
+            "--fail-if-any-below-threshold",
+          }
+          missing = sorted(required - flags)
+          if missing:
+            raise SystemExit(
+              "Missing CLI flags: " + ", ".join(missing)
+            )
+
+          print("Verified CLI failure policy flags")
+          PY
