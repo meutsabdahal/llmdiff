@@ -9,8 +9,7 @@ Changed a system prompt and not sure what you actually changed? `llmdiff` runs b
 ![llmdiff demo](assets/demo.gif)
 
 ```
-$ llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt \
-          --inputs tests/cases.json --model llama3.2
+$ llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt --inputs tests/cases.json --model llama3.2
 
 ─────────────────────────────────────────────────────────────────
  Case: customer-greeting  │  Similarity: 0.61  │  CHANGED
