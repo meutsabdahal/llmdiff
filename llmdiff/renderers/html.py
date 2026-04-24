@@ -4,8 +4,21 @@ from llmdiff.differ import DiffResult
 from llmdiff.metrics import Summary
 
 
+def _json_for_script(data: object) -> str:
+    """Serialize data for safe embedding in an HTML <script> block.
+
+    Escape HTML-significant characters so attacker-controlled text cannot
+    terminate the script tag (for example via "</script>").
+    """
+
+    dumped = json.dumps(data, indent=2)
+    return (
+        dumped.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    )
+
+
 def render_html(results: list[DiffResult], summary: Summary) -> str:
-    cases_json = json.dumps(
+    cases_json = _json_for_script(
         [
             {
                 "id": r.case_id,
@@ -22,10 +35,9 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
             }
             for r in results
         ],
-        indent=2,
     )
 
-    summary_json = json.dumps(
+    summary_json = _json_for_script(
         {
             "total": summary.total,
             "changed": summary.changed,
@@ -38,7 +50,6 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
             "most_diverged": summary.most_diverged,
             "least_changed": summary.least_changed,
         },
-        indent=2,
     )
 
     return f"""<!DOCTYPE html>

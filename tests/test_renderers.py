@@ -71,3 +71,17 @@ def test_render_html_contains_embedded_cases_and_summary_blocks():
     assert "const summary = " in html
     assert "case-1" in html
     assert "llmdiff report" in html
+
+
+def test_render_html_escapes_script_sensitive_characters_in_embedded_json():
+    result = _sample_result()
+    result.case_id = "<case&1>"
+    result.response_a = "</script>"
+    result.response_b = "<img src=x onerror=1>"
+
+    html = render_html([result], _sample_summary())
+
+    assert "\\u003ccase\\u00261\\u003e" in html
+    assert "\\u003c/script\\u003e" in html
+    assert "\\u003cimg src=x onerror=1\\u003e" in html
+    assert html.count("</script>") == 1
