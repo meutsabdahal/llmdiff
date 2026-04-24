@@ -1,5 +1,6 @@
 from __future__ import annotations
 import difflib
+import re
 from dataclasses import dataclass
 
 
@@ -16,6 +17,9 @@ class DiffResult:
     structural_changes: dict  # keys: lists, code_blocks, length_pct
 
 
+_ORDERED_LIST_MARKER_RE = re.compile(r"^\d+[.)](?:\s|$)")
+
+
 def _count_structural(text: str) -> dict:
     lines = text.splitlines()
     return {
@@ -23,7 +27,7 @@ def _count_structural(text: str) -> dict:
             1
             for l in lines
             if l.strip().startswith(("-", "*", "+"))
-            or (len(l) > 2 and l.strip()[0].isdigit() and l.strip()[1] in ".)")
+            or _ORDERED_LIST_MARKER_RE.match(l.strip())
         ),
         "code_blocks": text.count("```"),
         "word_count": len(text.split()),

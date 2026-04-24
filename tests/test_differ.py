@@ -51,6 +51,15 @@ def test_structural_list_detection():
     assert "lists_changed" in sc
 
 
+def test_structural_multi_digit_ordered_list_detection():
+    a = "9. Option one\n10. Option two\n11) Option three"
+    b = "- Option one\n- Option two\n- Option three"
+    sc = _structural_diff(a, b)
+
+    # Same number of list items despite different marker styles.
+    assert not sc["lists_changed"]
+
+
 def test_no_semantic_result():
     result = compute_diff(
         case_id="test",
