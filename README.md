@@ -4,7 +4,7 @@
 
 **git diff for LLM prompts.**
 
-Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted — token by token, with semantic similarity scores.
+Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted — line by line, with semantic similarity scores.
 
 ![llmdiff demo](assets/demo.gif)
 
@@ -291,7 +291,7 @@ No API keys are required.
 
 1. Loads both configurations (prompts, models, parameters)
 2. Runs both sides concurrently against each test case (3 concurrent pairs by default)
-3. Computes token-level diff using `difflib`
+3. Computes line-level unified diff using `difflib.unified_diff`
 4. Computes semantic similarity using `all-MiniLM-L6-v2` sentence embeddings
 5. Detects structural changes (lists, code blocks, length)
 6. Renders output using `rich` for terminal or exports to JSON

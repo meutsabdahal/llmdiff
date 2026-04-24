@@ -9,7 +9,7 @@ class DiffResult:
     case_id: str
     response_a: str
     response_b: str
-    unified_diff: list[str]  # output of difflib.unified_diff
+    unified_diff: list[str]  # line-level output of difflib.unified_diff
     changed: bool
     similarity: float | None  # None if --no-semantic
     length_a: int  # word count
@@ -57,6 +57,7 @@ def compute_diff(
     similarity: float | None,
     threshold: float | None,
 ) -> DiffResult:
+    """Compute line-level diff and change status for one case."""
     a_lines = response_a.splitlines(keepends=True)
     b_lines = response_b.splitlines(keepends=True)
 
