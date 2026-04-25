@@ -219,6 +219,24 @@ def main(
         "--temperature",
         help="Temperature for both sides (overridden by --temperature-a / --temperature-b)",
     ),
+    max_tokens: int = typer.Option(
+        1024,
+        "--max-tokens",
+        min=1,
+        help="Max generation tokens for both sides (overridden by --max-tokens-a / --max-tokens-b)",
+    ),
+    max_tokens_a: Optional[int] = typer.Option(
+        None,
+        "--max-tokens-a",
+        min=1,
+        help="Max generation tokens for side A",
+    ),
+    max_tokens_b: Optional[int] = typer.Option(
+        None,
+        "--max-tokens-b",
+        min=1,
+        help="Max generation tokens for side B",
+    ),
     concurrency: int = typer.Option(
         3,
         "--concurrency",
@@ -317,11 +335,13 @@ def main(
         model=resolved_model_a,
         base_url=base_url,
         temperature=temperature_a if temperature_a is not None else temperature,
+        max_tokens=max_tokens_a if max_tokens_a is not None else max_tokens,
     )
     model_cfg_b = ModelConfig(
         model=resolved_model_b,
         base_url=base_url,
         temperature=temperature_b if temperature_b is not None else temperature,
+        max_tokens=max_tokens_b if max_tokens_b is not None else max_tokens,
     )
 
     run_cfg = RunConfig(

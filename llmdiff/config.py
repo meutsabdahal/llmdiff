@@ -35,6 +35,13 @@ class ModelConfig(BaseModel):
             raise ValueError("temperature must be between 0.0 and 2.0")
         return v
 
+    @field_validator("max_tokens")
+    @classmethod
+    def max_tokens_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_tokens must be at least 1")
+        return v
+
 
 class SideConfig(BaseModel):
     prompt: str  # system prompt text, already loaded from file

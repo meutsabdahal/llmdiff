@@ -31,7 +31,9 @@ async def _call_ollama(
             {"role": "system", "content": side.prompt},
             *messages,
         ],
-        "options": {},
+        "options": {
+            "num_predict": side.model_cfg.max_tokens,
+        },
     }
     if side.model_cfg.temperature is not None:
         payload["options"]["temperature"] = side.model_cfg.temperature
