@@ -19,7 +19,7 @@ from rich.progress import (
 )
 
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
-from llmdiff.runner import run_case, check_models_available
+from llmdiff.runner import run_case, check_models_available, configure_request_policy
 from llmdiff.differ import compute_diff
 from llmdiff.metrics import semantic_similarity, semantic_similarities, compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
@@ -262,6 +262,24 @@ def main(
         min=1,
         help="Maximum number of test cases to run concurrently (must be >= 1)",
     ),
+    request_timeout: float = typer.Option(
+        120.0,
+        "--request-timeout",
+        min=0.1,
+        help="Per-request timeout in seconds for each Ollama /api/chat call.",
+    ),
+    retry_attempts: int = typer.Option(
+        2,
+        "--retry-attempts",
+        min=0,
+        help="Retry count for transient Ollama request failures.",
+    ),
+    retry_backoff_base: float = typer.Option(
+        0.5,
+        "--retry-backoff-base",
+        min=0.0,
+        help="Base seconds for exponential retry backoff (capped internally).",
+    ),
     no_semantic: bool = typer.Option(False, "--no-semantic"),
     semantic_batch_size: int = typer.Option(
         24,
@@ -349,6 +367,12 @@ def main(
             "[yellow]Warning:[/yellow] Both sides are identical "
             "(same prompt file, same model). Results will show no diff."
         )
+
+    configure_request_policy(
+        request_timeout=request_timeout,
+        max_retries=retry_attempts,
+        retry_backoff_base=retry_backoff_base,
+    )
 
     model_cfg_a = ModelConfig(
         model=resolved_model_a,
