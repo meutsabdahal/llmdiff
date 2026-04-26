@@ -192,6 +192,25 @@ def _collect_policy_failures(
     return failures
 
 
+def _write_output_report(output_path: Path, content: str) -> None:
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        console.print(
+            "[red]Error:[/red] Failed to create output directory "
+            f"'{output_path.parent}': {e}"
+        )
+        raise typer.Exit(1)
+
+    try:
+        output_path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        console.print(
+            "[red]Error:[/red] Failed to write report to " f"'{output_path}': {e}"
+        )
+        raise typer.Exit(1)
+
+
 @app.command()
 def main(
     prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
@@ -483,14 +502,14 @@ async def _run(
     if cfg.output_format == OutputFormat.JSON:
         out = render_json(results, summary)
         if output_path:
-            output_path.write_text(out)
+            _write_output_report(output_path, out)
             console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
     elif cfg.output_format == OutputFormat.HTML:
         out = render_html(results, summary)
         if output_path:
-            output_path.write_text(out)
+            _write_output_report(output_path, out)
             console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
