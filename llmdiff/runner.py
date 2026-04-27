@@ -1,7 +1,10 @@
 from __future__ import annotations
 import asyncio
+from collections.abc import Callable
 import httpx
 from llmdiff.config import RunConfig, SideConfig, TestCase
+from llmdiff.differ import DiffResult, compute_diff
+from llmdiff.metrics import semantic_similarities
 
 
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
@@ -268,6 +271,27 @@ async def check_models_available(
         )
 
 
+def _models_needed_by_endpoint(cfg: RunConfig) -> dict[str, list[str]]:
+    models_needed_by_endpoint: dict[str, set[str]] = {}
+
+    for side in (cfg.side_a, cfg.side_b):
+        base_url = side.model_cfg.base_url
+        if base_url not in models_needed_by_endpoint:
+            models_needed_by_endpoint[base_url] = set()
+        models_needed_by_endpoint[base_url].add(side.model_cfg.model)
+
+    return {
+        endpoint: sorted(models)
+        for endpoint, models in models_needed_by_endpoint.items()
+    }
+
+
+async def ensure_models_available(client: httpx.AsyncClient, cfg: RunConfig) -> None:
+    """Raises RuntimeError if any configured side model is missing."""
+    for endpoint, models_needed in _models_needed_by_endpoint(cfg).items():
+        await check_models_available(client, endpoint, models_needed)
+
+
 async def run_case(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
@@ -285,6 +309,21 @@ async def run_case(
     return resp_a, resp_b
 
 
+async def _run_case_responses(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    cfg: RunConfig,
+    on_case_completed: Callable[[TestCase], None] | None = None,
+) -> list[tuple[TestCase, str, str]]:
+    async def run_case_and_track(case: TestCase) -> tuple[TestCase, str, str]:
+        resp_a, resp_b = await run_case(client, semaphore, cfg, case)
+        if on_case_completed is not None:
+            on_case_completed(case)
+        return case, resp_a, resp_b
+
+    return await asyncio.gather(*[run_case_and_track(case) for case in cfg.cases])
+
+
 async def run_all(cfg: RunConfig) -> list[tuple[TestCase, str, str]]:
     """
     Run all test cases concurrently (up to cfg.concurrency at a time).
@@ -293,7 +332,65 @@ async def run_all(cfg: RunConfig) -> list[tuple[TestCase, str, str]]:
     semaphore = asyncio.Semaphore(cfg.concurrency)
 
     async with httpx.AsyncClient() as client:
-        tasks = [run_case(client, semaphore, cfg, case) for case in cfg.cases]
-        pairs = await asyncio.gather(*tasks)
+        return await _run_case_responses(client, semaphore, cfg)
 
-    return [(case, resp_a, resp_b) for case, (resp_a, resp_b) in zip(cfg.cases, pairs)]
+
+async def run_diffs(
+    cfg: RunConfig,
+    on_case_completed: Callable[[TestCase], None] | None = None,
+    on_semantic_scoring_start: Callable[[], None] | None = None,
+    on_semantic_scoring_complete: Callable[[], None] | None = None,
+) -> list[DiffResult]:
+    """
+    Execute a full llmdiff run and return computed diffs.
+
+    Steps:
+    1. Validate required models are available for each configured endpoint.
+    2. Run all prompt cases concurrently.
+    3. Optionally compute semantic similarity scores in batches.
+    4. Compute line-level diffs and change status for each case.
+    """
+    semaphore = asyncio.Semaphore(cfg.concurrency)
+
+    async with httpx.AsyncClient() as client:
+        await ensure_models_available(client, cfg)
+        responses = await _run_case_responses(
+            client,
+            semaphore,
+            cfg,
+            on_case_completed=on_case_completed,
+        )
+
+    if cfg.semantic:
+        if on_semantic_scoring_start is not None:
+            on_semantic_scoring_start()
+
+        pairs = [(resp_a, resp_b) for _, resp_a, resp_b in responses]
+        loop = asyncio.get_running_loop()
+        similarities: list[float | None] = await loop.run_in_executor(
+            None,
+            semantic_similarities,
+            pairs,
+            cfg.semantic_batch_size,
+        )
+
+        if len(similarities) != len(responses):
+            raise RuntimeError(
+                "Semantic scoring returned an unexpected number of scores."
+            )
+
+        if on_semantic_scoring_complete is not None:
+            on_semantic_scoring_complete()
+    else:
+        similarities = [None] * len(responses)
+
+    return [
+        compute_diff(
+            case_id=case.id,
+            response_a=resp_a,
+            response_b=resp_b,
+            similarity=similarity,
+            threshold=cfg.threshold,
+        )
+        for (case, resp_a, resp_b), similarity in zip(responses, similarities)
+    ]

@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import typer
 from pydantic import ValidationError
 from rich.console import Console
@@ -21,14 +20,12 @@ from rich.progress import (
 
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
 from llmdiff.runner import (
-    run_case,
-    check_models_available,
+    run_diffs,
     configure_request_policy,
     MAX_RETRY_ATTEMPTS,
     MAX_RETRY_BACKOFF_SECONDS,
 )
-from llmdiff.differ import compute_diff
-from llmdiff.metrics import semantic_similarity, semantic_similarities, compute_summary
+from llmdiff.metrics import compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
 from llmdiff.renderers.json_ import render_json
 from llmdiff.renderers.html import render_html
@@ -534,94 +531,45 @@ async def _run(
     # - different models, same prompt: show "prompt-a / llama3.2" vs "prompt-b / mistral"
     label_a = f"prompt-a  [{cfg.side_a.model_cfg.model}]"
     label_b = f"prompt-b  [{cfg.side_b.model_cfg.model}]"
-
-    # Collect required models per endpoint so side-specific base URLs work.
-    models_needed_by_endpoint: dict[str, set[str]] = {}
-    for side in (cfg.side_a, cfg.side_b):
-        base_url = side.model_cfg.base_url
-        if base_url not in models_needed_by_endpoint:
-            models_needed_by_endpoint[base_url] = set()
-        models_needed_by_endpoint[base_url].add(side.model_cfg.model)
-
-    try:
-        async with httpx.AsyncClient() as client:
-            for endpoint, models_needed in models_needed_by_endpoint.items():
-                await check_models_available(client, endpoint, sorted(models_needed))
-    except RuntimeError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
-
-    results = []
-    semaphore = asyncio.Semaphore(cfg.concurrency)
     total_steps = len(cfg.cases) + (1 if cfg.semantic else 0)
 
-    async with httpx.AsyncClient() as client:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(
-                f"Running {len(cfg.cases)} cases...", total=total_steps
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(
+            f"Running {len(cfg.cases)} cases...", total=total_steps
+        )
+
+        def on_case_completed(case: TestCase) -> None:
+            progress.advance(task, 1)
+            progress.update(task, description=f"Done: {case.id}")
+
+        def on_semantic_scoring_start() -> None:
+            progress.update(task, description="Scoring semantic similarity...")
+
+        def on_semantic_scoring_complete() -> None:
+            progress.advance(task, 1)
+            progress.update(task, description="Semantic scoring complete")
+
+        try:
+            results = await run_diffs(
+                cfg,
+                on_case_completed=on_case_completed,
+                on_semantic_scoring_start=(
+                    on_semantic_scoring_start if cfg.semantic else None
+                ),
+                on_semantic_scoring_complete=(
+                    on_semantic_scoring_complete if cfg.semantic else None
+                ),
             )
-
-            try:
-                if cfg.semantic:
-
-                    async def run_case_and_track(case: TestCase):
-                        resp_a, resp_b = await run_case(client, semaphore, cfg, case)
-                        progress.advance(task, 1)
-                        progress.update(task, description=f"Done: {case.id}")
-                        return case, resp_a, resp_b
-
-                    responses = await asyncio.gather(
-                        *[run_case_and_track(case) for case in cfg.cases]
-                    )
-
-                    progress.update(task, description="Scoring semantic similarity...")
-                    pairs = [(resp_a, resp_b) for _, resp_a, resp_b in responses]
-                    loop = asyncio.get_running_loop()
-                    similarities = await loop.run_in_executor(
-                        None,
-                        semantic_similarities,
-                        pairs,
-                        cfg.semantic_batch_size,
-                    )
-                    if len(similarities) != len(responses):
-                        raise RuntimeError(
-                            "Semantic scoring returned an unexpected number of scores."
-                        )
-
-                    progress.advance(task, 1)
-                    progress.update(task, description="Semantic scoring complete")
-
-                    for (case, resp_a, resp_b), sim in zip(responses, similarities):
-                        results.append(
-                            compute_diff(
-                                case_id=case.id,
-                                response_a=resp_a,
-                                response_b=resp_b,
-                                similarity=sim,
-                                threshold=cfg.threshold,
-                            )
-                        )
-                else:
-
-                    async def run_and_track(case: TestCase):
-                        result = await run_one(cfg, case, client, semaphore)
-                        progress.advance(task, 1)
-                        progress.update(task, description=f"Done: {case.id}")
-                        return result
-
-                    results = await asyncio.gather(
-                        *[run_and_track(case) for case in cfg.cases]
-                    )
-            except RuntimeError as e:
-                console.print(f"[red]Error:[/red] {e}")
-                raise typer.Exit(1)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
 
     display = [r for r in results if r.changed] if cfg.filter_changed else results
     summary = compute_summary(results)
@@ -663,26 +611,3 @@ async def _run(
         for failure in policy_failures:
             console.print(f"[red]Failure policy:[/red] {failure}")
         raise typer.Exit(1)
-
-
-async def run_one(
-    cfg: RunConfig,
-    case: TestCase,
-    client: httpx.AsyncClient,
-    semaphore: asyncio.Semaphore,
-):
-    """Run one case, then compute diff and semantic similarity if enabled."""
-    resp_a, resp_b = await run_case(client, semaphore, cfg, case)
-
-    sim = None
-    if cfg.semantic:
-        loop = asyncio.get_running_loop()
-        sim = await loop.run_in_executor(None, semantic_similarity, resp_a, resp_b)
-
-    return compute_diff(
-        case_id=case.id,
-        response_a=resp_a,
-        response_b=resp_b,
-        similarity=sim,
-        threshold=cfg.threshold,
-    )

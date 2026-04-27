@@ -189,13 +189,11 @@ async def test_run_filters_unchanged_cases(monkeypatch):
         filter_changed=True,
     )
 
-    async def fake_check_models_available(*_args, **_kwargs):
-        return None
-
-    async def fake_run_one(_cfg, case, _client, _semaphore):
-        if case.id == "changed":
-            return _mk_diff("changed", changed=True)
-        return _mk_diff("unchanged", changed=False)
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [
+            _mk_diff("changed", changed=True),
+            _mk_diff("unchanged", changed=False),
+        ]
 
     rendered_case_ids = []
     rendered_summary = []
@@ -206,8 +204,7 @@ async def test_run_filters_unchanged_cases(monkeypatch):
     def fake_render_summary(summary):
         rendered_summary.append(summary)
 
-    monkeypatch.setattr(cli, "check_models_available", fake_check_models_available)
-    monkeypatch.setattr(cli, "run_one", fake_run_one)
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
     monkeypatch.setattr(cli, "render_case_inline", fake_render_case_inline)
     monkeypatch.setattr(cli, "render_summary", fake_render_summary)
 
@@ -220,7 +217,7 @@ async def test_run_filters_unchanged_cases(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_uses_batched_semantic_scoring(monkeypatch):
+async def test_run_renders_results_from_runner_orchestration(monkeypatch):
     side_a = SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2"))
     side_b = SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2"))
     cfg = RunConfig(
@@ -236,20 +233,11 @@ async def test_run_uses_batched_semantic_scoring(monkeypatch):
         filter_changed=False,
     )
 
-    async def fake_check_models_available(*_args, **_kwargs):
-        return None
-
-    async def fake_run_case(_client, _semaphore, _cfg, case):
-        if case.id == "same":
-            return "same output", "same output"
-        return "left output", "right output"
-
-    semantic_calls = {}
-
-    def fake_semantic_similarities(pairs, batch_size):
-        semantic_calls["pairs"] = pairs
-        semantic_calls["batch_size"] = batch_size
-        return [0.99, 0.22]
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [
+            _mk_diff("same", changed=False),
+            _mk_diff("diff", changed=True),
+        ]
 
     rendered_case_ids = []
     rendered_summary = []
@@ -260,19 +248,12 @@ async def test_run_uses_batched_semantic_scoring(monkeypatch):
     def fake_render_summary(summary):
         rendered_summary.append(summary)
 
-    monkeypatch.setattr(cli, "check_models_available", fake_check_models_available)
-    monkeypatch.setattr(cli, "run_case", fake_run_case)
-    monkeypatch.setattr(cli, "semantic_similarities", fake_semantic_similarities)
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
     monkeypatch.setattr(cli, "render_case_inline", fake_render_case_inline)
     monkeypatch.setattr(cli, "render_summary", fake_render_summary)
 
     await cli._run(cfg)
 
-    assert semantic_calls["batch_size"] == 2
-    assert semantic_calls["pairs"] == [
-        ("same output", "same output"),
-        ("left output", "right output"),
-    ]
     assert rendered_case_ids == ["same", "diff"]
     assert len(rendered_summary) == 1
     assert rendered_summary[0].total == 2
@@ -280,7 +261,7 @@ async def test_run_uses_batched_semantic_scoring(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_checks_models_for_each_endpoint(monkeypatch):
+async def test_run_reports_runner_errors(monkeypatch):
     side_a = SideConfig(
         prompt="Prompt A",
         model_cfg=ModelConfig(model="llama3.2", base_url="http://a:11434"),
@@ -297,22 +278,12 @@ async def test_run_checks_models_for_each_endpoint(monkeypatch):
         output_format=OutputFormat.INLINE,
     )
 
-    calls = []
+    async def fake_run_diffs(_cfg, **_kwargs):
+        raise RuntimeError("boom")
 
-    async def fake_check_models_available(_client, endpoint, models):
-        calls.append((endpoint, tuple(models)))
-
-    async def fake_run_one(_cfg, _case, _client, _semaphore):
-        return _mk_diff("case-1", changed=False)
-
-    monkeypatch.setattr(cli, "check_models_available", fake_check_models_available)
-    monkeypatch.setattr(cli, "run_one", fake_run_one)
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
     monkeypatch.setattr(cli, "render_case_inline", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "render_summary", lambda *_args, **_kwargs: None)
 
-    await cli._run(cfg)
-
-    assert sorted(calls) == [
-        ("http://a:11434", ("llama3.2",)),
-        ("http://b:11434", ("mistral",)),
-    ]
+    with pytest.raises(typer.Exit):
+        await cli._run(cfg)
