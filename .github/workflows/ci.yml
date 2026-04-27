@@ -5,6 +5,12 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      coverage-threshold:
+        description: Optional minimum test coverage percentage to enforce (0-100)
+        required: false
+        type: string
 
 jobs:
   test:
@@ -24,10 +30,39 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-extras --group dev
+        run: uv sync --frozen --all-extras --group dev
 
       - name: Run tests
         run: uv run pytest tests/ -v
+
+  quality-gates:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      COVERAGE_THRESHOLD: ${{ github.event.inputs['coverage-threshold'] || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras --group dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Build package artifacts
+        run: uv build
+
+      - name: Verify package metadata
+        run: uv run twine check --strict dist/*
 
       - name: Verify CLI failure policy flags
         run: |
@@ -54,3 +89,19 @@ jobs:
 
           print("Verified CLI failure policy flags")
           PY
+
+      - name: Optional coverage threshold gate
+        run: |
+          if [[ -z "${COVERAGE_THRESHOLD}" ]]; then
+            echo "Coverage threshold not configured; skipping coverage gate."
+            echo "Pass workflow_dispatch input coverage-threshold to enforce coverage."
+            exit 0
+          fi
+
+          if ! [[ "${COVERAGE_THRESHOLD}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            echo "::error::COVERAGE_THRESHOLD must be a numeric percentage, got '${COVERAGE_THRESHOLD}'."
+            exit 1
+          fi
+
+          echo "Running coverage gate with --cov-fail-under=${COVERAGE_THRESHOLD}"
+          uv run pytest tests/ -v --cov=llmdiff --cov-report=term-missing --cov-fail-under="${COVERAGE_THRESHOLD}"
