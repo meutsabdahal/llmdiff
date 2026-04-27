@@ -4,7 +4,7 @@
 
 **git diff for LLM prompts.**
 
-Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted — line by line, with semantic similarity scores.
+Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted line by line, with semantic similarity scores.
 
 ![llmdiff demo](assets/demo.gif)
 
@@ -295,7 +295,7 @@ No API keys are required.
 5. Detects structural changes (lists, code blocks, length)
 6. Renders output using `rich` for terminal or exports to JSON
 
-The embedding model runs entirely locally — your response content never leaves your machine for the similarity computation.
+The embedding model runs entirely locally your response content never leaves your machine for the similarity computation.
 
 ---
 
