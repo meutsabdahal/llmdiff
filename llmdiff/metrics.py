@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections.abc import Iterable
 from dataclasses import dataclass
 from threading import Lock
 
@@ -39,34 +40,45 @@ def _cosine_from_normalized(a, b) -> float:
     return max(0.0, min(1.0, float(score)))
 
 
+def _append_similarity_scores_from_pair_batch(
+    model, pair_batch, scores: list[float]
+) -> None:
+    texts: list[str] = []
+    for a, b in pair_batch:
+        texts.extend((a, b))
+
+    embeddings = model.encode(texts, normalize_embeddings=True)
+    if len(embeddings) != len(texts):
+        raise RuntimeError("Embedding model returned an unexpected number of vectors.")
+
+    for i in range(0, len(embeddings), 2):
+        scores.append(_cosine_from_normalized(embeddings[i], embeddings[i + 1]))
+
+
 def semantic_similarities(
-    pairs: list[tuple[str, str]],
+    pairs: Iterable[tuple[str, str]],
     batch_size: int = 24,
 ) -> list[float]:
     """Returns cosine similarity [0, 1] for each (a, b) pair."""
-    if not pairs:
-        return []
-
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
 
-    model = _get_model()
+    model = None
     scores: list[float] = []
+    pair_batch: list[tuple[str, str]] = []
 
-    for i in range(0, len(pairs), batch_size):
-        chunk = pairs[i : i + batch_size]
-        texts: list[str] = []
-        for a, b in chunk:
-            texts.extend((a, b))
+    for pair in pairs:
+        if model is None:
+            model = _get_model()
+        pair_batch.append(pair)
+        if len(pair_batch) == batch_size:
+            _append_similarity_scores_from_pair_batch(model, pair_batch, scores)
+            pair_batch.clear()
 
-        embeddings = model.encode(texts, normalize_embeddings=True)
-        if len(embeddings) != len(texts):
-            raise RuntimeError(
-                "Embedding model returned an unexpected number of vectors."
-            )
-
-        for j in range(0, len(embeddings), 2):
-            scores.append(_cosine_from_normalized(embeddings[j], embeddings[j + 1]))
+    if pair_batch:
+        if model is None:
+            model = _get_model()
+        _append_similarity_scores_from_pair_batch(model, pair_batch, scores)
 
     return scores
 

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -296,6 +297,11 @@ def _write_output_report(output_path: Path, content: str) -> None:
         raise typer.Exit(1)
 
 
+def _iter_case_chunks(cases: list[TestCase], chunk_size: int):
+    for i in range(0, len(cases), chunk_size):
+        yield cases[i : i + chunk_size]
+
+
 @app.command()
 def main(
     prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
@@ -531,7 +537,10 @@ async def _run(
     # - different models, same prompt: show "prompt-a / llama3.2" vs "prompt-b / mistral"
     label_a = f"prompt-a  [{cfg.side_a.model_cfg.model}]"
     label_b = f"prompt-b  [{cfg.side_b.model_cfg.model}]"
-    total_steps = len(cfg.cases) + (1 if cfg.semantic else 0)
+    semantic_chunks = (
+        math.ceil(len(cfg.cases) / cfg.semantic_batch_size) if cfg.semantic else 0
+    )
+    total_steps = len(cfg.cases) + semantic_chunks
 
     with Progress(
         SpinnerColumn(),
@@ -557,16 +566,24 @@ async def _run(
             progress.update(task, description="Semantic scoring complete")
 
         try:
-            results = await run_diffs(
-                cfg,
-                on_case_completed=on_case_completed,
-                on_semantic_scoring_start=(
-                    on_semantic_scoring_start if cfg.semantic else None
-                ),
-                on_semantic_scoring_complete=(
-                    on_semantic_scoring_complete if cfg.semantic else None
-                ),
-            )
+            if cfg.semantic:
+                results = []
+                for chunk_cases in _iter_case_chunks(
+                    cfg.cases, cfg.semantic_batch_size
+                ):
+                    chunk_cfg = cfg.model_copy(update={"cases": chunk_cases})
+                    chunk_results = await run_diffs(
+                        chunk_cfg,
+                        on_case_completed=on_case_completed,
+                        on_semantic_scoring_start=on_semantic_scoring_start,
+                        on_semantic_scoring_complete=on_semantic_scoring_complete,
+                    )
+                    results.extend(chunk_results)
+            else:
+                results = await run_diffs(
+                    cfg,
+                    on_case_completed=on_case_completed,
+                )
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)

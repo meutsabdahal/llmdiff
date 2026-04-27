@@ -287,3 +287,41 @@ async def test_run_reports_runner_errors(monkeypatch):
 
     with pytest.raises(typer.Exit):
         await cli._run(cfg)
+
+
+@pytest.mark.asyncio
+async def test_run_semantic_processes_cases_in_chunks(monkeypatch):
+    side_a = SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2"))
+    side_b = SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2"))
+    cfg = RunConfig(
+        side_a=side_a,
+        side_b=side_b,
+        cases=[
+            PromptCase(id="case-1", user="hello"),
+            PromptCase(id="case-2", user="hello"),
+            PromptCase(id="case-3", user="hello"),
+            PromptCase(id="case-4", user="hello"),
+            PromptCase(id="case-5", user="hello"),
+        ],
+        semantic=True,
+        semantic_batch_size=2,
+        output_format=OutputFormat.INLINE,
+    )
+
+    chunk_calls = []
+
+    async def fake_run_diffs(chunk_cfg, **_kwargs):
+        chunk_calls.append([case.id for case in chunk_cfg.cases])
+        return [_mk_diff(case.id, changed=False) for case in chunk_cfg.cases]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.setattr(cli, "render_case_inline", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "render_summary", lambda *_args, **_kwargs: None)
+
+    await cli._run(cfg)
+
+    assert chunk_calls == [
+        ["case-1", "case-2"],
+        ["case-3", "case-4"],
+        ["case-5"],
+    ]

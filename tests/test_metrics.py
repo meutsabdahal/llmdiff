@@ -90,3 +90,40 @@ def test_semantic_similarity_single_pair_wrapper(monkeypatch):
     assert score == 0.55
     assert called["pairs"] == [("a", "b")]
     assert called["batch_size"] == 1
+
+
+def test_semantic_similarities_accepts_pair_iterables(monkeypatch):
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def encode(self, texts, normalize_embeddings=True):
+            self.calls.append(list(texts))
+            mapping = {
+                "same_a": [1.0, 0.0, 0.0],
+                "same_b": [1.0, 0.0, 0.0],
+                "orth_a": [1.0, 0.0, 0.0],
+                "orth_b": [0.0, 1.0, 0.0],
+            }
+            return [mapping[t] for t in texts]
+
+    fake_model = FakeModel()
+    monkeypatch.setattr(metrics, "_get_model", lambda: fake_model)
+
+    pairs = ((a, b) for a, b in [("same_a", "same_b"), ("orth_a", "orth_b")])
+    scores = metrics.semantic_similarities(pairs, batch_size=1)
+
+    assert scores == [1.0, 0.0]
+    assert fake_model.calls == [["same_a", "same_b"], ["orth_a", "orth_b"]]
+
+
+def test_semantic_similarities_skips_model_load_for_empty_iterable(monkeypatch):
+    monkeypatch.setattr(
+        metrics,
+        "_get_model",
+        lambda: (_ for _ in ()).throw(AssertionError("model load should be skipped")),
+    )
+
+    scores = metrics.semantic_similarities(iter(()), batch_size=4)
+
+    assert scores == []
