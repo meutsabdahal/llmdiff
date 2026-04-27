@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +39,55 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+_ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None
+
+    if line.startswith("export "):
+        line = line[len("export ") :].strip()
+
+    if "=" not in line:
+        raise ValueError("expected KEY=VALUE assignment")
+
+    key, raw_value = line.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError("missing environment variable name before '='")
+    if not _ENV_KEY_PATTERN.match(key):
+        raise ValueError(f"invalid environment variable name '{key}'")
+
+    value = raw_value.strip()
+    if not value:
+        return key, ""
+
+    if value[0] in {'"', "'"}:
+        quote = value[0]
+        escaped = False
+        closing_index: int | None = None
+
+        for i, ch in enumerate(value[1:], start=1):
+            if ch == quote and not escaped:
+                closing_index = i
+                break
+            escaped = ch == "\\" and not escaped
+
+        if closing_index is None:
+            raise ValueError("unterminated quoted value")
+
+        parsed_value = value[1:closing_index]
+        trailing = value[closing_index + 1 :].strip()
+        if trailing and not trailing.startswith("#"):
+            raise ValueError("unexpected characters after quoted value")
+
+        return key, parsed_value
+
+    # Unquoted values support inline comments after at least one whitespace char.
+    parsed_value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+    return key, parsed_value
 
 
 def _load_local_env() -> None:
@@ -50,19 +100,34 @@ def _load_local_env() -> None:
     if env_path is None:
         return
 
-    for raw_line in env_path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        if "=" not in line:
+    if not env_path.is_file():
+        typer.echo(f"Error: .env path is not a file: {env_path}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        typer.echo(f"Error: .env file is not valid UTF-8: {env_path}", err=True)
+        raise typer.Exit(1)
+    except OSError as e:
+        typer.echo(f"Error: failed to read .env file {env_path}: {e}", err=True)
+        raise typer.Exit(1)
+
+    for line_no, raw_line in enumerate(lines, start=1):
+        try:
+            parsed = _parse_env_assignment(raw_line)
+        except ValueError as e:
+            typer.echo(
+                f"Error: invalid .env line {line_no} in {env_path}: {e}",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        if parsed is None:
             continue
 
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        key, value = parsed
+        if key not in os.environ:
             os.environ[key] = value
 
 
@@ -93,7 +158,24 @@ def _load_prompt(path: Path) -> str:
     if not path.exists():
         typer.echo(f"Error: prompt file not found: {path}", err=True)
         raise typer.Exit(1)
-    return path.read_text().strip()
+    if not path.is_file():
+        typer.echo(f"Error: prompt path is not a file: {path}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        prompt = path.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError:
+        typer.echo(f"Error: prompt file is not valid UTF-8: {path}", err=True)
+        raise typer.Exit(1)
+    except OSError as e:
+        typer.echo(f"Error: failed to read prompt file {path}: {e}", err=True)
+        raise typer.Exit(1)
+
+    if not prompt:
+        typer.echo(f"Error: prompt file is empty: {path}", err=True)
+        raise typer.Exit(1)
+
+    return prompt
 
 
 def _load_cases(path: Path) -> list[TestCase]:
