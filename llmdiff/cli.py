@@ -19,7 +19,13 @@ from rich.progress import (
 )
 
 from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
-from llmdiff.runner import run_case, check_models_available, configure_request_policy
+from llmdiff.runner import (
+    run_case,
+    check_models_available,
+    configure_request_policy,
+    MAX_RETRY_ATTEMPTS,
+    MAX_RETRY_BACKOFF_SECONDS,
+)
 from llmdiff.differ import compute_diff
 from llmdiff.metrics import semantic_similarity, semantic_similarities, compute_summary
 from llmdiff.renderers.terminal import render_case_inline, render_summary
@@ -272,13 +278,20 @@ def main(
         2,
         "--retry-attempts",
         min=0,
-        help="Retry count for transient Ollama request failures.",
+        max=MAX_RETRY_ATTEMPTS,
+        help=(
+            "Retry count for transient Ollama request failures "
+            f"(0-{MAX_RETRY_ATTEMPTS})."
+        ),
     ),
     retry_backoff_base: float = typer.Option(
         0.5,
         "--retry-backoff-base",
         min=0.0,
-        help="Base seconds for exponential retry backoff (capped internally).",
+        help=(
+            "Base seconds for exponential retry backoff "
+            f"(capped at {MAX_RETRY_BACKOFF_SECONDS:.1f}s)."
+        ),
     ),
     no_semantic: bool = typer.Option(False, "--no-semantic"),
     semantic_batch_size: int = typer.Option(
@@ -368,11 +381,15 @@ def main(
             "(same prompt file, same model). Results will show no diff."
         )
 
-    configure_request_policy(
-        request_timeout=request_timeout,
-        max_retries=retry_attempts,
-        retry_backoff_base=retry_backoff_base,
-    )
+    try:
+        configure_request_policy(
+            request_timeout=request_timeout,
+            max_retries=retry_attempts,
+            retry_backoff_base=retry_backoff_base,
+        )
+    except ValueError as e:
+        typer.echo(f"Error: invalid request policy: {e}", err=True)
+        raise typer.Exit(1)
 
     model_cfg_a = ModelConfig(
         model=resolved_model_a,

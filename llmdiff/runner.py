@@ -7,7 +7,8 @@ from llmdiff.config import RunConfig, SideConfig, TestCase
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_RETRIES = 2
 _DEFAULT_RETRY_BACKOFF_BASE_SECONDS = 0.5
-_MAX_RETRY_BACKOFF_SECONDS = 8.0
+MAX_RETRY_ATTEMPTS = 8
+MAX_RETRY_BACKOFF_SECONDS = 8.0
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
@@ -26,7 +27,7 @@ def _response_detail(resp: httpx.Response) -> str:
     return str(payload)[:200]
 
 
-def configure_request_policy(
+def _validate_request_policy(
     *,
     request_timeout: float,
     max_retries: int,
@@ -36,8 +37,23 @@ def configure_request_policy(
         raise ValueError("request_timeout must be greater than 0")
     if max_retries < 0:
         raise ValueError("max_retries must be 0 or greater")
+    if max_retries > MAX_RETRY_ATTEMPTS:
+        raise ValueError(f"max_retries must be {MAX_RETRY_ATTEMPTS} or less")
     if retry_backoff_base < 0:
         raise ValueError("retry_backoff_base must be 0 or greater")
+
+
+def configure_request_policy(
+    *,
+    request_timeout: float,
+    max_retries: int,
+    retry_backoff_base: float,
+) -> None:
+    _validate_request_policy(
+        request_timeout=request_timeout,
+        max_retries=max_retries,
+        retry_backoff_base=retry_backoff_base,
+    )
 
     global _DEFAULT_REQUEST_TIMEOUT_SECONDS
     global _DEFAULT_MAX_RETRIES
@@ -53,7 +69,7 @@ def _retry_delay_seconds(retry_attempt: int, backoff_base: float) -> float:
         return 0.0
 
     delay = backoff_base * (2 ** (retry_attempt - 1))
-    return min(delay, _MAX_RETRY_BACKOFF_SECONDS)
+    return min(delay, MAX_RETRY_BACKOFF_SECONDS)
 
 
 async def _sleep_before_retry(retry_attempt: int, backoff_base: float) -> None:
@@ -78,6 +94,11 @@ async def _call_ollama(
         _DEFAULT_RETRY_BACKOFF_BASE_SECONDS
         if retry_backoff_base is None
         else retry_backoff_base
+    )
+    _validate_request_policy(
+        request_timeout=request_timeout,
+        max_retries=max_retries,
+        retry_backoff_base=retry_backoff_base,
     )
     total_attempts = max_retries + 1
 
