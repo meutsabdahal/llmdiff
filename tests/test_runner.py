@@ -147,3 +147,21 @@ async def test_check_models_available_handles_invalid_shape():
 
     with pytest.raises(RuntimeError, match="models' array"):
         await check_models_available(client, "http://localhost:11434", ["llama3.2"])
+
+
+@pytest.mark.asyncio
+async def test_check_models_available_reports_endpoint_for_missing_models():
+    client = FakeAsyncClient(
+        get_response=_response(
+            "GET",
+            "http://localhost:11434/api/tags",
+            200,
+            json_body={"models": [{"name": "llama3.2:latest"}]},
+        )
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Model\(s\) not found in Ollama at http://localhost:11434",
+    ):
+        await check_models_available(client, "http://localhost:11434", ["mistral"])

@@ -263,7 +263,9 @@ async def check_models_available(
     ]
     if missing:
         missing_str = "\n".join(f"  ollama pull {m}" for m in missing)
-        raise RuntimeError(f"Model(s) not found in Ollama:\n{missing_str}")
+        raise RuntimeError(
+            f"Model(s) not found in Ollama at {base_url}:\n{missing_str}"
+        )
 
 
 async def run_case(
