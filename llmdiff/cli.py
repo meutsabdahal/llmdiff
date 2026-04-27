@@ -237,6 +237,16 @@ def main(
     base_url: str = typer.Option(
         "http://localhost:11434", "--base-url", help="Ollama base URL"
     ),
+    base_url_a: Optional[str] = typer.Option(
+        None,
+        "--base-url-a",
+        help="Ollama base URL for side A (overrides --base-url)",
+    ),
+    base_url_b: Optional[str] = typer.Option(
+        None,
+        "--base-url-b",
+        help="Ollama base URL for side B (overrides --base-url)",
+    ),
     temperature_a: Optional[float] = typer.Option(None, "--temperature-a"),
     temperature_b: Optional[float] = typer.Option(None, "--temperature-b"),
     temperature: Optional[float] = typer.Option(
@@ -374,6 +384,8 @@ def main(
 
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
+    resolved_base_url_a = base_url_a or base_url
+    resolved_base_url_b = base_url_b or base_url
 
     if resolved_model_a == resolved_model_b and prompt_a == prompt_b:
         console.print(
@@ -393,13 +405,13 @@ def main(
 
     model_cfg_a = ModelConfig(
         model=resolved_model_a,
-        base_url=base_url,
+        base_url=resolved_base_url_a,
         temperature=temperature_a if temperature_a is not None else temperature,
         max_tokens=max_tokens_a if max_tokens_a is not None else max_tokens,
     )
     model_cfg_b = ModelConfig(
         model=resolved_model_b,
-        base_url=base_url,
+        base_url=resolved_base_url_b,
         temperature=temperature_b if temperature_b is not None else temperature,
         max_tokens=max_tokens_b if max_tokens_b is not None else max_tokens,
     )
@@ -441,19 +453,18 @@ async def _run(
     label_a = f"prompt-a  [{cfg.side_a.model_cfg.model}]"
     label_b = f"prompt-b  [{cfg.side_b.model_cfg.model}]"
 
-    # Collect unique models (could be 1 or 2)
-    models_needed = list(
-        {
-            cfg.side_a.model_cfg.model,
-            cfg.side_b.model_cfg.model,
-        }
-    )
+    # Collect required models per endpoint so side-specific base URLs work.
+    models_needed_by_endpoint: dict[str, set[str]] = {}
+    for side in (cfg.side_a, cfg.side_b):
+        base_url = side.model_cfg.base_url
+        if base_url not in models_needed_by_endpoint:
+            models_needed_by_endpoint[base_url] = set()
+        models_needed_by_endpoint[base_url].add(side.model_cfg.model)
 
     try:
         async with httpx.AsyncClient() as client:
-            await check_models_available(
-                client, cfg.side_a.model_cfg.base_url, models_needed
-            )
+            for endpoint, models_needed in models_needed_by_endpoint.items():
+                await check_models_available(client, endpoint, sorted(models_needed))
     except RuntimeError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)

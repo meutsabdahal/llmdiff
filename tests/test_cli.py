@@ -1,6 +1,7 @@
 import pytest
 import typer
 from typer.testing import CliRunner
+import json
 
 import llmdiff.cli as cli
 from llmdiff.config import (
@@ -92,6 +93,84 @@ def test_load_cases_accepts_valid_context_messages(tmp_path):
     assert cases[0].id == "case-1"
     assert cases[0].context is not None
     assert cases[0].context[0].role == "user"
+
+
+def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--base-url",
+            "http://default:11434",
+            "--base-url-a",
+            "http://side-a:11434",
+            "--base-url-b",
+            "http://side-b:11434",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.side_a.model_cfg.base_url == "http://side-a:11434"
+    assert cfg.side_b.model_cfg.base_url == "http://side-b:11434"
+
+
+def test_cli_base_url_a_falls_back_to_base_url(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--base-url",
+            "http://default:11434",
+            "--base-url-a",
+            "http://side-a:11434",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.side_a.model_cfg.base_url == "http://side-a:11434"
+    assert cfg.side_b.model_cfg.base_url == "http://default:11434"
 
 
 @pytest.mark.asyncio
@@ -198,3 +277,42 @@ async def test_run_uses_batched_semantic_scoring(monkeypatch):
     assert len(rendered_summary) == 1
     assert rendered_summary[0].total == 2
     assert rendered_summary[0].changed == 1
+
+
+@pytest.mark.asyncio
+async def test_run_checks_models_for_each_endpoint(monkeypatch):
+    side_a = SideConfig(
+        prompt="Prompt A",
+        model_cfg=ModelConfig(model="llama3.2", base_url="http://a:11434"),
+    )
+    side_b = SideConfig(
+        prompt="Prompt B",
+        model_cfg=ModelConfig(model="mistral", base_url="http://b:11434"),
+    )
+    cfg = RunConfig(
+        side_a=side_a,
+        side_b=side_b,
+        cases=[PromptCase(id="case-1", user="hello")],
+        semantic=False,
+        output_format=OutputFormat.INLINE,
+    )
+
+    calls = []
+
+    async def fake_check_models_available(_client, endpoint, models):
+        calls.append((endpoint, tuple(models)))
+
+    async def fake_run_one(_cfg, _case, _client, _semaphore):
+        return _mk_diff("case-1", changed=False)
+
+    monkeypatch.setattr(cli, "check_models_available", fake_check_models_available)
+    monkeypatch.setattr(cli, "run_one", fake_run_one)
+    monkeypatch.setattr(cli, "render_case_inline", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "render_summary", lambda *_args, **_kwargs: None)
+
+    await cli._run(cfg)
+
+    assert sorted(calls) == [
+        ("http://a:11434", ("llama3.2",)),
+        ("http://b:11434", ("mistral",)),
+    ]
