@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/meutsabdahal/llmdiff/actions/workflows/ci.yml/badge.svg)](https://github.com/meutsabdahal/llmdiff/actions/workflows/ci.yml)
 
+[![PyPI](https://img.shields.io/pypi/v/llmdiff-cli)](https://pypi.org/project/llmdiff-cli)
+
 **git diff for LLM prompts.**
 
 Changed a system prompt and not sure what you actually changed? `llmdiff` runs both versions against your test cases and shows you exactly what shifted line by line, with semantic similarity scores.
