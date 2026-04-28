@@ -55,19 +55,16 @@ The diff framing maps directly to how developers already think about code change
 ## Install
 
 ```bash
-git clone https://github.com/meutsabdahal/llmdiff
-cd llmdiff
-uv sync --all-extras
-uv run llmdiff --help
+pip install llmdiff-cli
+llmdiff --help
 ```
 
 Requires Python 3.10+. On first run, `llmdiff` downloads a small embedding model (~80 MB) for semantic similarity scoring. This is a one-time download.
 
-Prefer a lighter install without semantic scoring?
+Prefer a faster run without semantic scoring?
 
 ```bash
-uv sync
-uv run llmdiff ... --no-semantic
+llmdiff ... --no-semantic
 ```
 
 ---
@@ -319,4 +316,4 @@ Issues and PRs welcome. If output is hard to read or a metric is unclear, open a
 
 ## License
 
-MIT
+[MIT](LICENSE)
