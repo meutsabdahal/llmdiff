@@ -103,8 +103,7 @@ ollama pull llama3.2
 **3. Run a diff**
 
 ```bash
-llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt \
-  --inputs tests/cases.json --model llama3.2
+llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt --inputs tests/cases.json --model llama3.2
 ```
 
 ---
@@ -114,22 +113,13 @@ llmdiff --prompt-a prompts/v1.txt --prompt-b prompts/v2.txt \
 ### Compare two prompts (same model)
 
 ```bash
-llmdiff \
-  --prompt-a prompts/system_v1.txt \
-  --prompt-b prompts/system_v2.txt \
-  --inputs tests/cases.json \
-  --model llama3.2
+llmdiff --prompt-a prompts/system_v1.txt --prompt-b prompts/system_v2.txt --inputs tests/cases.json --model llama3.2
 ```
 
 ### Compare two models (same prompt)
 
 ```bash
-llmdiff \
-  --prompt-a prompts/system.txt \
-  --prompt-b prompts/system.txt \
-  --model-a llama3.2 \
-  --model-b mistral \
-  --inputs tests/cases.json
+llmdiff --prompt-a prompts/system.txt --prompt-b prompts/system.txt --model-a llama3.2 model-b mistral inputs tests/cases.json
 ```
 
 Useful when you want to benchmark models against each other on your actual use case
@@ -200,23 +190,12 @@ llmdiff ... --base-url http://localhost:11434 --model llama3.2
 Gate your pipeline with native failure policies (no `jq` post-processing needed):
 
 ```bash
-llmdiff \
-  --prompt-a prompts/system_main.txt \
-  --prompt-b prompts/system_branch.txt \
-  --inputs tests/regression.json \
-  --model llama3.2 \
-  --fail-on-changed
+llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt --inputs tests/regression.json --model llama3.2 --fail-on-changed
 ```
 
 ```bash
 # Example: allow minor drift, but fail on low semantic quality
-llmdiff \
-  --prompt-a prompts/system_main.txt \
-  --prompt-b prompts/system_branch.txt \
-  --inputs tests/regression.json \
-  --model llama3.2 \
-  --fail-if-avg-below 0.80 \
-  --fail-if-any-below-threshold 0.60
+llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt --inputs tests/regression.json --model llama3.2 --fail-if-avg-below 0.80 --fail-if-any-below-threshold 0.60
 ```
 
 ---
