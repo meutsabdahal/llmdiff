@@ -60,6 +60,21 @@ def test_structural_multi_digit_ordered_list_detection():
     assert not sc["lists_changed"]
 
 
+def test_diff_lines_have_no_trailing_newlines():
+    result = compute_diff(
+        case_id="test",
+        response_a="line one\nline two",
+        response_b="line one\nline changed",
+        similarity=None,
+        threshold=None,
+    )
+
+    assert result.unified_diff
+    assert all(not line.endswith("\n") for line in result.unified_diff)
+    assert "-line two" in result.unified_diff
+    assert "+line changed" in result.unified_diff
+
+
 def test_no_semantic_result():
     result = compute_diff(
         case_id="test",

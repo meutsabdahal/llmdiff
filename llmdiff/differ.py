@@ -58,8 +58,10 @@ def compute_diff(
     threshold: float | None,
 ) -> DiffResult:
     """Compute line-level diff and change status for one case."""
-    a_lines = response_a.splitlines(keepends=True)
-    b_lines = response_b.splitlines(keepends=True)
+    # No keepends: with lineterm="" the diff needs no trailing newlines, and
+    # keeping them made every renderer emit a blank line after each diff row.
+    a_lines = response_a.splitlines()
+    b_lines = response_b.splitlines()
 
     unified = list(
         difflib.unified_diff(
