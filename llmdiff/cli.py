@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
+import math
 import os
 import re
-import math
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Optional
 
@@ -12,24 +15,31 @@ import typer
 from pydantic import ValidationError
 from rich.console import Console
 from rich.progress import (
+    BarColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
-    BarColumn,
     TaskProgressColumn,
+    TextColumn,
 )
 
-from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
-from llmdiff.runner import (
-    run_diffs,
-    configure_request_policy,
-    MAX_RETRY_ATTEMPTS,
-    MAX_RETRY_BACKOFF_SECONDS,
+from llmdiff.config import (
+    ChangedWhen,
+    ModelConfig,
+    OutputFormat,
+    RunConfig,
+    SideConfig,
+    TestCase,
 )
 from llmdiff.metrics import compute_summary
-from llmdiff.renderers.terminal import render_case_inline, render_summary
-from llmdiff.renderers.json_ import render_json
 from llmdiff.renderers.html import render_html
+from llmdiff.renderers.json_ import render_json
+from llmdiff.renderers.terminal import render_case_inline, render_summary
+from llmdiff.runner import (
+    MAX_RETRY_ATTEMPTS,
+    MAX_RETRY_BACKOFF_SECONDS,
+    configure_request_policy,
+    run_diffs,
+)
 
 app = typer.Typer(
     name="llmdiff",
@@ -38,6 +48,30 @@ app = typer.Typer(
 )
 console = Console()
 _ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Only variables llmdiff actually uses are imported from .env files. Loading
+# arbitrary keys would let a .env in an untrusted working directory inject
+# variables (HF_ENDPOINT, SSL_CERT_FILE, ...) that redirect or weaken the
+# embedding-model download.
+_ENV_ALLOWED_KEYS = frozenset(
+    {
+        "HF_TOKEN",
+        "TRANSFORMERS_VERBOSITY",
+        "HF_HUB_DISABLE_PROGRESS_BARS",
+    }
+)
+
+
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+
+    try:
+        resolved = _package_version("llmdiff-cli")
+    except PackageNotFoundError:
+        resolved = "unknown (not installed as a package)"
+
+    typer.echo(f"llmdiff {resolved}")
+    raise typer.Exit()
 
 
 def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
@@ -76,7 +110,11 @@ def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
         if closing_index is None:
             raise ValueError("unterminated quoted value")
 
-        parsed_value = value[1:closing_index]
+        # Drop the backslashes used to escape quotes/backslashes so the
+        # stored value matches what the author quoted.
+        parsed_value = re.sub(
+            rf"\\([\\{quote}])", r"\1", value[1:closing_index]
+        )
         trailing = value[closing_index + 1 :].strip()
         if trailing and not trailing.startswith("#"):
             raise ValueError("unexpected characters after quoted value")
@@ -88,13 +126,22 @@ def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
     return key, parsed_value
 
 
+def _env_file_candidates() -> list[Path]:
+    candidates = [Path.cwd() / ".env"]
+
+    # The package parent is only a meaningful .env location for source
+    # checkouts; on a pip install it would be site-packages, where a stray
+    # .env should never be picked up.
+    source_root = Path(__file__).resolve().parents[1]
+    if (source_root / "pyproject.toml").is_file():
+        candidates.append(source_root / ".env")
+
+    return candidates
+
+
 def _load_local_env() -> None:
-    """Loads .env variables if they are not already set in the shell."""
-    candidates = [
-        Path.cwd() / ".env",
-        Path(__file__).resolve().parents[1] / ".env",
-    ]
-    env_path = next((p for p in candidates if p.exists()), None)
+    """Loads supported .env variables if they are not already set in the shell."""
+    env_path = next((p for p in _env_file_candidates() if p.exists()), None)
     if env_path is None:
         return
 
@@ -125,7 +172,7 @@ def _load_local_env() -> None:
             continue
 
         key, value = parsed
-        if key not in os.environ:
+        if key in _ENV_ALLOWED_KEYS and key not in os.environ:
             os.environ[key] = value
 
 
@@ -181,7 +228,16 @@ def _load_cases(path: Path) -> list[TestCase]:
         typer.echo(f"Error: inputs file not found: {path}", err=True)
         raise typer.Exit(1)
     try:
-        raw = json.loads(path.read_text())
+        raw_text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        typer.echo(f"Error: inputs file is not valid UTF-8: {path}", err=True)
+        raise typer.Exit(1)
+    except OSError as e:
+        typer.echo(f"Error: failed to read inputs file {path}: {e}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        raw = json.loads(raw_text)
     except json.JSONDecodeError as e:
         typer.echo(f"Error: invalid JSON in {path}: {e}", err=True)
         raise typer.Exit(1)
@@ -357,6 +413,14 @@ def main(
         min=1,
         help="Max generation tokens for side B",
     ),
+    seed: Optional[int] = typer.Option(
+        None,
+        "--seed",
+        help=(
+            "Fixed sampling seed passed to Ollama for both sides. "
+            "Combine with --temperature 0 for reproducible comparisons."
+        ),
+    ),
     concurrency: int = typer.Option(
         3,
         "--concurrency",
@@ -403,6 +467,16 @@ def main(
         max=1.0,
         help="Mark results as changed when similarity is below this value (0.0-1.0)",
     ),
+    changed_when: ChangedWhen = typer.Option(
+        ChangedWhen.ANY,
+        "--changed-when",
+        case_sensitive=False,
+        help=(
+            "What marks a case changed: any (line diff or similarity below "
+            "--threshold), lines (line diff only), semantic (similarity below "
+            "--threshold only)."
+        ),
+    ),
     fail_on_changed: bool = typer.Option(
         False,
         "--fail-on-changed",
@@ -441,6 +515,13 @@ def main(
         help="Output format: inline, json, or html",
     ),
     output: Optional[Path] = typer.Option(None, "--output"),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the llmdiff version and exit.",
+    ),
 ):
     """
     Compare two LLM prompt configurations across a set of test cases.
@@ -463,6 +544,14 @@ def main(
         typer.echo(
             "Error: --fail-if-avg-below and --fail-if-any-below-threshold "
             "require semantic scoring (remove --no-semantic).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if changed_when == ChangedWhen.SEMANTIC and (no_semantic or threshold is None):
+        typer.echo(
+            "Error: --changed-when semantic requires --threshold and semantic "
+            "scoring (remove --no-semantic).",
             err=True,
         )
         raise typer.Exit(1)
@@ -493,12 +582,14 @@ def main(
         base_url=resolved_base_url_a,
         temperature=temperature_a if temperature_a is not None else temperature,
         max_tokens=max_tokens_a if max_tokens_a is not None else max_tokens,
+        seed=seed,
     )
     model_cfg_b = ModelConfig(
         model=resolved_model_b,
         base_url=resolved_base_url_b,
         temperature=temperature_b if temperature_b is not None else temperature,
         max_tokens=max_tokens_b if max_tokens_b is not None else max_tokens,
+        seed=seed,
     )
 
     run_cfg = RunConfig(
@@ -513,6 +604,7 @@ def main(
         max_diff_lines=max_diff_lines,
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
+        changed_when=changed_when,
     )
     asyncio.run(
         _run(
@@ -568,8 +660,8 @@ async def _run(
         try:
             if cfg.semantic:
                 results = []
-                for chunk_cases in _iter_case_chunks(
-                    cfg.cases, cfg.semantic_batch_size
+                for chunk_index, chunk_cases in enumerate(
+                    _iter_case_chunks(cfg.cases, cfg.semantic_batch_size)
                 ):
                     chunk_cfg = cfg.model_copy(update={"cases": chunk_cases})
                     chunk_results = await run_diffs(
@@ -577,6 +669,9 @@ async def _run(
                         on_case_completed=on_case_completed,
                         on_semantic_scoring_start=on_semantic_scoring_start,
                         on_semantic_scoring_complete=on_semantic_scoring_complete,
+                        # Endpoints and models are identical across chunks, so
+                        # the availability preflight only needs to run once.
+                        check_models=chunk_index == 0,
                     )
                     results.extend(chunk_results)
             else:

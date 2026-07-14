@@ -1,5 +1,5 @@
-import pytest
 import httpx
+import pytest
 
 import llmdiff.runner as runner
 from llmdiff.config import ModelConfig, RunConfig, SideConfig, TestCase
@@ -106,6 +106,44 @@ async def test_call_ollama_handles_missing_message_content():
 
 
 @pytest.mark.asyncio
+async def test_call_ollama_includes_seed_in_request_options():
+    captured = {}
+
+    class CapturingClient:
+        async def post(self, url, json=None, timeout=None):
+            captured["payload"] = json
+            return _response(
+                "POST", url, 200, json_body={"message": {"content": "ok"}}
+            )
+
+    side = SideConfig(
+        prompt="Prompt",
+        model_cfg=ModelConfig(model="llama3.2", seed=42),
+    )
+
+    result = await _call_ollama(CapturingClient(), side, [])
+
+    assert result == "ok"
+    assert captured["payload"]["options"]["seed"] == 42
+
+
+@pytest.mark.asyncio
+async def test_call_ollama_omits_seed_when_unset():
+    captured = {}
+
+    class CapturingClient:
+        async def post(self, url, json=None, timeout=None):
+            captured["payload"] = json
+            return _response(
+                "POST", url, 200, json_body={"message": {"content": "ok"}}
+            )
+
+    await _call_ollama(CapturingClient(), _side(), [])
+
+    assert "seed" not in captured["payload"]["options"]
+
+
+@pytest.mark.asyncio
 async def test_check_models_available_handles_http_status_error():
     client = FakeAsyncClient(
         get_response=_response(
@@ -169,6 +207,28 @@ async def test_check_models_available_reports_endpoint_for_missing_models():
 
 
 @pytest.mark.asyncio
+async def test_check_models_available_requires_exact_tag_match():
+    client = FakeAsyncClient(
+        get_response=_response(
+            "GET",
+            "http://localhost:11434/api/tags",
+            200,
+            json_body={"models": [{"name": "llama3.1:8b"}]},
+        )
+    )
+
+    # Exact pulled tag and bare base name pass preflight.
+    await check_models_available(client, "http://localhost:11434", ["llama3.1:8b"])
+    await check_models_available(client, "http://localhost:11434", ["llama3.1"])
+
+    # A different tag of the same base model must be reported as missing.
+    with pytest.raises(RuntimeError, match=r"ollama pull llama3\.1:70b"):
+        await check_models_available(
+            client, "http://localhost:11434", ["llama3.1:70b"]
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_diffs_checks_models_for_each_endpoint(monkeypatch):
     cfg = RunConfig(
         side_a=SideConfig(
@@ -203,6 +263,32 @@ async def test_run_diffs_checks_models_for_each_endpoint(monkeypatch):
     assert len(results) == 1
     assert results[0].case_id == "case-1"
     assert not results[0].changed
+
+
+@pytest.mark.asyncio
+async def test_run_diffs_can_skip_model_availability_check(monkeypatch):
+    cfg = RunConfig(
+        side_a=SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2")),
+        side_b=SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2")),
+        cases=[TestCase(id="case-1", user="hello")],
+        semantic=False,
+    )
+
+    calls = []
+
+    async def fake_check_models_available(_client, endpoint, models):
+        calls.append(endpoint)
+
+    async def fake_run_case(_client, _semaphore, _cfg, _case):
+        return "same", "same"
+
+    monkeypatch.setattr(runner, "check_models_available", fake_check_models_available)
+    monkeypatch.setattr(runner, "run_case", fake_run_case)
+
+    results = await runner.run_diffs(cfg, check_models=False)
+
+    assert calls == []
+    assert len(results) == 1
 
 
 @pytest.mark.asyncio

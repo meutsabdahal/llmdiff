@@ -1,13 +1,29 @@
 from __future__ import annotations
+
 from enum import Enum
-from pydantic import BaseModel, field_validator
 from typing import Literal
+
+from pydantic import BaseModel, field_validator
 
 
 class OutputFormat(str, Enum):
     INLINE = "inline"
     JSON = "json"
     HTML = "html"
+
+
+class ChangedWhen(str, Enum):
+    """What marks a case as changed.
+
+    ANY: any line-level diff, or similarity below the threshold (default).
+    LINES: line-level diff only.
+    SEMANTIC: similarity below the threshold only — useful with stochastic
+    models where surface wording always differs.
+    """
+
+    ANY = "any"
+    LINES = "lines"
+    SEMANTIC = "semantic"
 
 
 class ChatMessage(BaseModel):
@@ -27,6 +43,7 @@ class ModelConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     temperature: float | None = None
     max_tokens: int = 1024
+    seed: int | None = None  # fixed sampling seed for reproducible runs
 
     @field_validator("temperature")
     @classmethod
@@ -73,6 +90,7 @@ class RunConfig(BaseModel):
     max_diff_lines: int = 120
     filter_changed: bool = False
     threshold: float | None = None
+    changed_when: ChangedWhen = ChangedWhen.ANY
 
     @field_validator("cases")
     @classmethod

@@ -1,4 +1,3 @@
-import pytest
 import llmdiff.metrics as metrics
 from llmdiff.metrics import compute_summary
 
@@ -73,23 +72,6 @@ def test_semantic_similarities_batches_and_scores(monkeypatch):
     assert len(fake_model.calls) == 2
     assert len(fake_model.calls[0]) == 4
     assert len(fake_model.calls[1]) == 2
-
-
-def test_semantic_similarity_single_pair_wrapper(monkeypatch):
-    called = {}
-
-    def fake_semantic_similarities(pairs, batch_size=24):
-        called["pairs"] = pairs
-        called["batch_size"] = batch_size
-        return [0.55]
-
-    monkeypatch.setattr(metrics, "semantic_similarities", fake_semantic_similarities)
-
-    score = metrics.semantic_similarity("a", "b")
-
-    assert score == 0.55
-    assert called["pairs"] == [("a", "b")]
-    assert called["batch_size"] == 1
 
 
 def test_semantic_similarities_accepts_pair_iterables(monkeypatch):

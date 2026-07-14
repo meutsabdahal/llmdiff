@@ -1,7 +1,9 @@
+import json
+import os
+
 import pytest
 import typer
 from typer.testing import CliRunner
-import json
 
 import llmdiff.cli as cli
 from llmdiff.config import (
@@ -9,10 +11,11 @@ from llmdiff.config import (
     OutputFormat,
     RunConfig,
     SideConfig,
+)
+from llmdiff.config import (
     TestCase as PromptCase,
 )
 from llmdiff.differ import DiffResult
-
 
 runner = CliRunner()
 
@@ -37,6 +40,13 @@ def _mk_diff(case_id: str, changed: bool) -> DiffResult:
     )
 
 
+def test_cli_version_flag_prints_version_and_exits():
+    result = runner.invoke(cli.app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("llmdiff ")
+
+
 def test_cli_rejects_output_for_inline_format():
     result = runner.invoke(
         cli.app,
@@ -54,6 +64,25 @@ def test_cli_rejects_output_for_inline_format():
 
     assert result.exit_code == 1
     assert "--output requires --format json or --format html." in result.output
+
+
+def test_cli_changed_when_semantic_requires_threshold():
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "missing-a.txt",
+            "--prompt-b",
+            "missing-b.txt",
+            "--inputs",
+            "missing-cases.json",
+            "--changed-when",
+            "semantic",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--changed-when semantic requires --threshold" in result.output
 
 
 def test_load_cases_requires_json_array(tmp_path, capsys):
@@ -81,6 +110,17 @@ def test_load_cases_reports_context_validation_details(tmp_path, capsys):
     assert "context.0.role" in captured.err
 
 
+def test_load_cases_rejects_non_utf8_file(tmp_path, capsys):
+    path = tmp_path / "cases.json"
+    path.write_bytes(b"\xff\xfe\x00bad")
+
+    with pytest.raises(typer.Exit):
+        cli._load_cases(path)
+
+    captured = capsys.readouterr()
+    assert "not valid UTF-8" in captured.err
+
+
 def test_load_cases_accepts_valid_context_messages(tmp_path):
     path = tmp_path / "cases.json"
     path.write_text(
@@ -93,6 +133,39 @@ def test_load_cases_accepts_valid_context_messages(tmp_path):
     assert cases[0].id == "case-1"
     assert cases[0].context is not None
     assert cases[0].context[0].role == "user"
+
+
+def test_parse_env_assignment_unescapes_quoted_values():
+    assert cli._parse_env_assignment('KEY="a\\"b"') == ("KEY", 'a"b')
+    assert cli._parse_env_assignment("KEY='a\\'b'") == ("KEY", "a'b")
+    assert cli._parse_env_assignment('KEY="a\\\\b"') == ("KEY", "a\\b")
+
+
+def test_load_local_env_only_imports_allowlisted_keys(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "HF_TOKEN=from-env-file\nHF_ENDPOINT=http://attacker.example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+
+    cli._load_local_env()
+
+    assert os.environ["HF_TOKEN"] == "from-env-file"
+    assert "HF_ENDPOINT" not in os.environ
+
+
+def test_load_local_env_does_not_override_shell_values(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("HF_TOKEN=from-env-file\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HF_TOKEN", "from-shell")
+
+    cli._load_local_env()
+
+    assert os.environ["HF_TOKEN"] == "from-shell"
 
 
 def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):
@@ -133,6 +206,42 @@ def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):
     cfg = captured["cfg"]
     assert cfg.side_a.model_cfg.base_url == "http://side-a:11434"
     assert cfg.side_b.model_cfg.base_url == "http://side-b:11434"
+
+
+def test_cli_seed_applies_to_both_sides(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--seed",
+            "7",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.side_a.model_cfg.seed == 7
+    assert cfg.side_b.model_cfg.seed == 7
 
 
 def test_cli_base_url_a_falls_back_to_base_url(tmp_path, monkeypatch):
@@ -309,9 +418,11 @@ async def test_run_semantic_processes_cases_in_chunks(monkeypatch):
     )
 
     chunk_calls = []
+    check_models_flags = []
 
     async def fake_run_diffs(chunk_cfg, **_kwargs):
         chunk_calls.append([case.id for case in chunk_cfg.cases])
+        check_models_flags.append(_kwargs.get("check_models"))
         return [_mk_diff(case.id, changed=False) for case in chunk_cfg.cases]
 
     monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
@@ -325,3 +436,5 @@ async def test_run_semantic_processes_cases_in_chunks(monkeypatch):
         ["case-3", "case-4"],
         ["case-5"],
     ]
+    # Only the first chunk pays for the model availability preflight.
+    assert check_models_flags == [True, False, False]

@@ -50,8 +50,8 @@ dev = [
 target-version = "py310"
 
 [tool.ruff.lint]
-# Keep CI lint focused on high-signal correctness issues.
-select = ["E9", "F63", "F7", "F82"]
+# High-signal correctness issues, plus unused imports and import ordering.
+select = ["E9", "F401", "F63", "F7", "F82", "I"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -59,10 +59,6 @@ files = ["llmdiff"]
 namespace_packages = true
 explicit_package_bases = true
 warn_unused_configs = true
-
-[[tool.mypy.overrides]]
-module = ["llmdiff.runner"]
-disable_error_code = ["arg-type", "index"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["llmdiff"]

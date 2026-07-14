@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
+
 import httpx
+
 from llmdiff.config import RunConfig, SideConfig, TestCase
 from llmdiff.differ import DiffResult, compute_diff
 from llmdiff.metrics import semantic_similarities
-
 
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_RETRIES = 2
@@ -105,6 +107,12 @@ async def _call_ollama(
     )
     total_attempts = max_retries + 1
 
+    options: dict[str, float | int] = {"num_predict": side.model_cfg.max_tokens}
+    if side.model_cfg.temperature is not None:
+        options["temperature"] = side.model_cfg.temperature
+    if side.model_cfg.seed is not None:
+        options["seed"] = side.model_cfg.seed
+
     payload = {
         "model": side.model_cfg.model,
         "stream": False,
@@ -112,12 +120,8 @@ async def _call_ollama(
             {"role": "system", "content": side.prompt},
             *messages,
         ],
-        "options": {
-            "num_predict": side.model_cfg.max_tokens,
-        },
+        "options": options,
     }
-    if side.model_cfg.temperature is not None:
-        payload["options"]["temperature"] = side.model_cfg.temperature
 
     for attempt in range(1, total_attempts + 1):
         try:
@@ -259,11 +263,15 @@ async def check_models_available(
         pulled.add(name.split(":")[0])
         pulled_full.add(name)
 
-    available = pulled | pulled_full
+    def _is_missing(requested: str) -> bool:
+        # A tagged request must match the exact pulled tag; matching on the
+        # base name alone would pass preflight for e.g. "llama3.1:70b" when
+        # only "llama3.1:8b" is pulled, deferring the failure to a 404 later.
+        if ":" in requested:
+            return requested not in pulled_full
+        return requested not in pulled
 
-    missing = [
-        m for m in models if m not in available and m.split(":")[0] not in pulled
-    ]
+    missing = [m for m in models if _is_missing(m)]
     if missing:
         missing_str = "\n".join(f"  ollama pull {m}" for m in missing)
         raise RuntimeError(
@@ -324,28 +332,20 @@ async def _run_case_responses(
     return await asyncio.gather(*[run_case_and_track(case) for case in cfg.cases])
 
 
-async def run_all(cfg: RunConfig) -> list[tuple[TestCase, str, str]]:
-    """
-    Run all test cases concurrently (up to cfg.concurrency at a time).
-    Returns list of (case, response_a, response_b).
-    """
-    semaphore = asyncio.Semaphore(cfg.concurrency)
-
-    async with httpx.AsyncClient() as client:
-        return await _run_case_responses(client, semaphore, cfg)
-
-
 async def run_diffs(
     cfg: RunConfig,
     on_case_completed: Callable[[TestCase], None] | None = None,
     on_semantic_scoring_start: Callable[[], None] | None = None,
     on_semantic_scoring_complete: Callable[[], None] | None = None,
+    check_models: bool = True,
 ) -> list[DiffResult]:
     """
     Execute a full llmdiff run and return computed diffs.
 
     Steps:
-    1. Validate required models are available for each configured endpoint.
+    1. Validate required models are available for each configured endpoint
+       (skipped when check_models is False, e.g. for follow-up chunks of a
+       run that already validated them).
     2. Run all prompt cases concurrently.
     3. Optionally compute semantic similarity scores in batches.
     4. Compute line-level diffs and change status for each case.
@@ -353,7 +353,8 @@ async def run_diffs(
     semaphore = asyncio.Semaphore(cfg.concurrency)
 
     async with httpx.AsyncClient() as client:
-        await ensure_models_available(client, cfg)
+        if check_models:
+            await ensure_models_available(client, cfg)
         responses = await _run_case_responses(
             client,
             semaphore,
@@ -361,23 +362,26 @@ async def run_diffs(
             on_case_completed=on_case_completed,
         )
 
+    similarities: list[float | None]
     if cfg.semantic:
         if on_semantic_scoring_start is not None:
             on_semantic_scoring_start()
 
         pairs = [(resp_a, resp_b) for _, resp_a, resp_b in responses]
         loop = asyncio.get_running_loop()
-        similarities: list[float | None] = await loop.run_in_executor(
+        scores = await loop.run_in_executor(
             None,
             semantic_similarities,
             pairs,
             cfg.semantic_batch_size,
         )
 
-        if len(similarities) != len(responses):
+        if len(scores) != len(responses):
             raise RuntimeError(
                 "Semantic scoring returned an unexpected number of scores."
             )
+
+        similarities = list(scores)
 
         if on_semantic_scoring_complete is not None:
             on_semantic_scoring_complete()
@@ -391,6 +395,7 @@ async def run_diffs(
             response_b=resp_b,
             similarity=similarity,
             threshold=cfg.threshold,
+            changed_when=cfg.changed_when,
         )
         for (case, resp_a, resp_b), similarity in zip(responses, similarities)
     ]

@@ -1,5 +1,5 @@
-import pytest
-from llmdiff.differ import compute_diff, _structural_diff
+from llmdiff.config import ChangedWhen
+from llmdiff.differ import _structural_diff, compute_diff
 
 
 def test_identical_responses_not_changed():
@@ -58,6 +58,61 @@ def test_structural_multi_digit_ordered_list_detection():
 
     # Same number of list items despite different marker styles.
     assert not sc["lists_changed"]
+
+
+def test_changed_when_semantic_ignores_line_diff_above_threshold():
+    result = compute_diff(
+        case_id="test",
+        response_a="The capital is Kathmandu.",
+        response_b="Kathmandu is the capital.",
+        similarity=0.95,
+        threshold=0.8,
+        changed_when=ChangedWhen.SEMANTIC,
+    )
+
+    assert result.unified_diff  # wording differs
+    assert not result.changed  # but semantically equivalent
+
+
+def test_changed_when_semantic_flags_below_threshold():
+    result = compute_diff(
+        case_id="test",
+        response_a="A",
+        response_b="A",
+        similarity=0.2,
+        threshold=0.8,
+        changed_when=ChangedWhen.SEMANTIC,
+    )
+
+    assert result.changed
+
+
+def test_changed_when_lines_ignores_threshold():
+    result = compute_diff(
+        case_id="test",
+        response_a="A",
+        response_b="A",
+        similarity=0.2,
+        threshold=0.8,
+        changed_when=ChangedWhen.LINES,
+    )
+
+    assert not result.changed
+
+
+def test_diff_lines_have_no_trailing_newlines():
+    result = compute_diff(
+        case_id="test",
+        response_a="line one\nline two",
+        response_b="line one\nline changed",
+        similarity=None,
+        threshold=None,
+    )
+
+    assert result.unified_diff
+    assert all(not line.endswith("\n") for line in result.unified_diff)
+    assert "-line two" in result.unified_diff
+    assert "+line changed" in result.unified_diff
 
 
 def test_no_semantic_result():
