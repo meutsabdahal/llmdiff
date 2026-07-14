@@ -228,6 +228,32 @@ async def test_run_diffs_checks_models_for_each_endpoint(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_diffs_can_skip_model_availability_check(monkeypatch):
+    cfg = RunConfig(
+        side_a=SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2")),
+        side_b=SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2")),
+        cases=[TestCase(id="case-1", user="hello")],
+        semantic=False,
+    )
+
+    calls = []
+
+    async def fake_check_models_available(_client, endpoint, models):
+        calls.append(endpoint)
+
+    async def fake_run_case(_client, _semaphore, _cfg, _case):
+        return "same", "same"
+
+    monkeypatch.setattr(runner, "check_models_available", fake_check_models_available)
+    monkeypatch.setattr(runner, "run_case", fake_run_case)
+
+    results = await runner.run_diffs(cfg, check_models=False)
+
+    assert calls == []
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
 async def test_run_diffs_uses_batched_semantic_scoring(monkeypatch):
     cfg = RunConfig(
         side_a=SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2")),

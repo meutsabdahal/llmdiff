@@ -601,8 +601,8 @@ async def _run(
         try:
             if cfg.semantic:
                 results = []
-                for chunk_cases in _iter_case_chunks(
-                    cfg.cases, cfg.semantic_batch_size
+                for chunk_index, chunk_cases in enumerate(
+                    _iter_case_chunks(cfg.cases, cfg.semantic_batch_size)
                 ):
                     chunk_cfg = cfg.model_copy(update={"cases": chunk_cases})
                     chunk_results = await run_diffs(
@@ -610,6 +610,9 @@ async def _run(
                         on_case_completed=on_case_completed,
                         on_semantic_scoring_start=on_semantic_scoring_start,
                         on_semantic_scoring_complete=on_semantic_scoring_complete,
+                        # Endpoints and models are identical across chunks, so
+                        # the availability preflight only needs to run once.
+                        check_models=chunk_index == 0,
                     )
                     results.extend(chunk_results)
             else:

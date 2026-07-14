@@ -344,12 +344,15 @@ async def run_diffs(
     on_case_completed: Callable[[TestCase], None] | None = None,
     on_semantic_scoring_start: Callable[[], None] | None = None,
     on_semantic_scoring_complete: Callable[[], None] | None = None,
+    check_models: bool = True,
 ) -> list[DiffResult]:
     """
     Execute a full llmdiff run and return computed diffs.
 
     Steps:
-    1. Validate required models are available for each configured endpoint.
+    1. Validate required models are available for each configured endpoint
+       (skipped when check_models is False, e.g. for follow-up chunks of a
+       run that already validated them).
     2. Run all prompt cases concurrently.
     3. Optionally compute semantic similarity scores in batches.
     4. Compute line-level diffs and change status for each case.
@@ -357,7 +360,8 @@ async def run_diffs(
     semaphore = asyncio.Semaphore(cfg.concurrency)
 
     async with httpx.AsyncClient() as client:
-        await ensure_models_available(client, cfg)
+        if check_models:
+            await ensure_models_available(client, cfg)
         responses = await _run_case_responses(
             client,
             semaphore,

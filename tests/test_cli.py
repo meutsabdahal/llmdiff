@@ -354,9 +354,11 @@ async def test_run_semantic_processes_cases_in_chunks(monkeypatch):
     )
 
     chunk_calls = []
+    check_models_flags = []
 
     async def fake_run_diffs(chunk_cfg, **_kwargs):
         chunk_calls.append([case.id for case in chunk_cfg.cases])
+        check_models_flags.append(_kwargs.get("check_models"))
         return [_mk_diff(case.id, changed=False) for case in chunk_cfg.cases]
 
     monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
@@ -370,3 +372,5 @@ async def test_run_semantic_processes_cases_in_chunks(monkeypatch):
         ["case-3", "case-4"],
         ["case-5"],
     ]
+    # Only the first chunk pays for the model availability preflight.
+    assert check_models_flags == [True, False, False]
