@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import math
+from importlib.metadata import PackageNotFoundError, version as _package_version
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +50,19 @@ _ENV_ALLOWED_KEYS = frozenset(
         "HF_HUB_DISABLE_PROGRESS_BARS",
     }
 )
+
+
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+
+    try:
+        resolved = _package_version("llmdiff-cli")
+    except PackageNotFoundError:
+        resolved = "unknown (not installed as a package)"
+
+    typer.echo(f"llmdiff {resolved}")
+    raise typer.Exit()
 
 
 def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
@@ -474,6 +488,13 @@ def main(
         help="Output format: inline, json, or html",
     ),
     output: Optional[Path] = typer.Option(None, "--output"),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the llmdiff version and exit.",
+    ),
 ):
     """
     Compare two LLM prompt configurations across a set of test cases.

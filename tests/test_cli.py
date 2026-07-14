@@ -38,6 +38,13 @@ def _mk_diff(case_id: str, changed: bool) -> DiffResult:
     )
 
 
+def test_cli_version_flag_prints_version_and_exits():
+    result = runner.invoke(cli.app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("llmdiff ")
+
+
 def test_cli_rejects_output_for_inline_format():
     result = runner.invoke(
         cli.app,
