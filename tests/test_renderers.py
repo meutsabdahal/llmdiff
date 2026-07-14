@@ -56,12 +56,16 @@ def test_render_json_schema_has_expected_fields():
         "id",
         "changed",
         "similarity",
+        "response_a",
+        "response_b",
         "length_a",
         "length_b",
         "length_pct",
         "diff",
     }
     assert case["id"] == "case-1"
+    assert case["response_a"] == "A"
+    assert case["response_b"] == "B"
 
 
 def test_render_html_contains_embedded_cases_and_summary_blocks():

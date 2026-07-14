@@ -26,6 +26,8 @@ def render_json(results: list[DiffResult], summary: Summary) -> str:
                     "similarity": (
                         round(r.similarity, 4) if r.similarity is not None else None
                     ),
+                    "response_a": r.response_a,
+                    "response_b": r.response_b,
                     "length_a": r.length_a,
                     "length_b": r.length_b,
                     "length_pct": r.structural_changes["length_pct"],
