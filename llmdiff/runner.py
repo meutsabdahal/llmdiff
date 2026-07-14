@@ -107,6 +107,12 @@ async def _call_ollama(
     )
     total_attempts = max_retries + 1
 
+    options: dict[str, float | int] = {"num_predict": side.model_cfg.max_tokens}
+    if side.model_cfg.temperature is not None:
+        options["temperature"] = side.model_cfg.temperature
+    if side.model_cfg.seed is not None:
+        options["seed"] = side.model_cfg.seed
+
     payload = {
         "model": side.model_cfg.model,
         "stream": False,
@@ -114,14 +120,8 @@ async def _call_ollama(
             {"role": "system", "content": side.prompt},
             *messages,
         ],
-        "options": {
-            "num_predict": side.model_cfg.max_tokens,
-        },
+        "options": options,
     }
-    if side.model_cfg.temperature is not None:
-        payload["options"]["temperature"] = side.model_cfg.temperature
-    if side.model_cfg.seed is not None:
-        payload["options"]["seed"] = side.model_cfg.seed
 
     for attempt in range(1, total_attempts + 1):
         try:
@@ -362,23 +362,26 @@ async def run_diffs(
             on_case_completed=on_case_completed,
         )
 
+    similarities: list[float | None]
     if cfg.semantic:
         if on_semantic_scoring_start is not None:
             on_semantic_scoring_start()
 
         pairs = [(resp_a, resp_b) for _, resp_a, resp_b in responses]
         loop = asyncio.get_running_loop()
-        similarities: list[float | None] = await loop.run_in_executor(
+        scores = await loop.run_in_executor(
             None,
             semantic_similarities,
             pairs,
             cfg.semantic_batch_size,
         )
 
-        if len(similarities) != len(responses):
+        if len(scores) != len(responses):
             raise RuntimeError(
                 "Semantic scoring returned an unexpected number of scores."
             )
+
+        similarities = list(scores)
 
         if on_semantic_scoring_complete is not None:
             on_semantic_scoring_complete()

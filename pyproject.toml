@@ -60,10 +60,6 @@ namespace_packages = true
 explicit_package_bases = true
 warn_unused_configs = true
 
-[[tool.mypy.overrides]]
-module = ["llmdiff.runner"]
-disable_error_code = ["arg-type", "index"]
-
 [tool.hatch.build.targets.wheel]
 packages = ["llmdiff"]
 
