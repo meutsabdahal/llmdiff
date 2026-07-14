@@ -169,6 +169,28 @@ async def test_check_models_available_reports_endpoint_for_missing_models():
 
 
 @pytest.mark.asyncio
+async def test_check_models_available_requires_exact_tag_match():
+    client = FakeAsyncClient(
+        get_response=_response(
+            "GET",
+            "http://localhost:11434/api/tags",
+            200,
+            json_body={"models": [{"name": "llama3.1:8b"}]},
+        )
+    )
+
+    # Exact pulled tag and bare base name pass preflight.
+    await check_models_available(client, "http://localhost:11434", ["llama3.1:8b"])
+    await check_models_available(client, "http://localhost:11434", ["llama3.1"])
+
+    # A different tag of the same base model must be reported as missing.
+    with pytest.raises(RuntimeError, match=r"ollama pull llama3\.1:70b"):
+        await check_models_available(
+            client, "http://localhost:11434", ["llama3.1:70b"]
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_diffs_checks_models_for_each_endpoint(monkeypatch):
     cfg = RunConfig(
         side_a=SideConfig(

@@ -259,11 +259,15 @@ async def check_models_available(
         pulled.add(name.split(":")[0])
         pulled_full.add(name)
 
-    available = pulled | pulled_full
+    def _is_missing(requested: str) -> bool:
+        # A tagged request must match the exact pulled tag; matching on the
+        # base name alone would pass preflight for e.g. "llama3.1:70b" when
+        # only "llama3.1:8b" is pulled, deferring the failure to a 404 later.
+        if ":" in requested:
+            return requested not in pulled_full
+        return requested not in pulled
 
-    missing = [
-        m for m in models if m not in available and m.split(":")[0] not in pulled
-    ]
+    missing = [m for m in models if _is_missing(m)]
     if missing:
         missing_str = "\n".join(f"  ollama pull {m}" for m in missing)
         raise RuntimeError(
