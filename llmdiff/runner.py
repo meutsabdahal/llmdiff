@@ -401,6 +401,7 @@ async def run_diffs(
             response_b=resp_b,
             similarity=similarity,
             threshold=cfg.threshold,
+            changed_when=cfg.changed_when,
         )
         for (case, resp_a, resp_b), similarity in zip(responses, similarities)
     ]

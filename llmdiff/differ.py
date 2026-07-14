@@ -3,6 +3,8 @@ import difflib
 import re
 from dataclasses import dataclass
 
+from llmdiff.config import ChangedWhen
+
 
 @dataclass
 class DiffResult:
@@ -56,6 +58,7 @@ def compute_diff(
     response_b: str,
     similarity: float | None,
     threshold: float | None,
+    changed_when: ChangedWhen = ChangedWhen.ANY,
 ) -> DiffResult:
     """Compute line-level diff and change status for one case."""
     # No keepends: with lineterm="" the diff needs no trailing newlines, and
@@ -73,14 +76,19 @@ def compute_diff(
         )
     )
 
-    # "changed" means: any line-level diff exists, or similarity is below threshold
     has_line_diff = any(
         l.startswith(("+", "-")) and not l.startswith(("+++", "---")) for l in unified
     )
     below_threshold = (
         threshold is not None and similarity is not None and similarity < threshold
     )
-    changed = has_line_diff or below_threshold
+
+    if changed_when == ChangedWhen.LINES:
+        changed = has_line_diff
+    elif changed_when == ChangedWhen.SEMANTIC:
+        changed = below_threshold
+    else:
+        changed = has_line_diff or below_threshold
 
     structural = _structural_diff(response_a, response_b)
 

@@ -10,6 +10,20 @@ class OutputFormat(str, Enum):
     HTML = "html"
 
 
+class ChangedWhen(str, Enum):
+    """What marks a case as changed.
+
+    ANY: any line-level diff, or similarity below the threshold (default).
+    LINES: line-level diff only.
+    SEMANTIC: similarity below the threshold only — useful with stochastic
+    models where surface wording always differs.
+    """
+
+    ANY = "any"
+    LINES = "lines"
+    SEMANTIC = "semantic"
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str
@@ -74,6 +88,7 @@ class RunConfig(BaseModel):
     max_diff_lines: int = 120
     filter_changed: bool = False
     threshold: float | None = None
+    changed_when: ChangedWhen = ChangedWhen.ANY
 
     @field_validator("cases")
     @classmethod

@@ -64,6 +64,25 @@ def test_cli_rejects_output_for_inline_format():
     assert "--output requires --format json or --format html." in result.output
 
 
+def test_cli_changed_when_semantic_requires_threshold():
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "missing-a.txt",
+            "--prompt-b",
+            "missing-b.txt",
+            "--inputs",
+            "missing-cases.json",
+            "--changed-when",
+            "semantic",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--changed-when semantic requires --threshold" in result.output
+
+
 def test_load_cases_requires_json_array(tmp_path, capsys):
     path = tmp_path / "cases.json"
     path.write_text('{"id": "x", "user": "hi"}')

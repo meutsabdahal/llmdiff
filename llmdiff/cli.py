@@ -20,7 +20,14 @@ from rich.progress import (
     TaskProgressColumn,
 )
 
-from llmdiff.config import ModelConfig, SideConfig, TestCase, RunConfig, OutputFormat
+from llmdiff.config import (
+    ChangedWhen,
+    ModelConfig,
+    OutputFormat,
+    RunConfig,
+    SideConfig,
+    TestCase,
+)
 from llmdiff.runner import (
     run_diffs,
     configure_request_policy,
@@ -458,6 +465,16 @@ def main(
         max=1.0,
         help="Mark results as changed when similarity is below this value (0.0-1.0)",
     ),
+    changed_when: ChangedWhen = typer.Option(
+        ChangedWhen.ANY,
+        "--changed-when",
+        case_sensitive=False,
+        help=(
+            "What marks a case changed: any (line diff or similarity below "
+            "--threshold), lines (line diff only), semantic (similarity below "
+            "--threshold only)."
+        ),
+    ),
     fail_on_changed: bool = typer.Option(
         False,
         "--fail-on-changed",
@@ -529,6 +546,14 @@ def main(
         )
         raise typer.Exit(1)
 
+    if changed_when == ChangedWhen.SEMANTIC and (no_semantic or threshold is None):
+        typer.echo(
+            "Error: --changed-when semantic requires --threshold and semantic "
+            "scoring (remove --no-semantic).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
     resolved_base_url_a = base_url_a or base_url
@@ -577,6 +602,7 @@ def main(
         max_diff_lines=max_diff_lines,
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
+        changed_when=changed_when,
     )
     asyncio.run(
         _run(
