@@ -9,6 +9,11 @@ _MISSING_SEMANTIC_DEPS_MSG = (
     "'pip install \"llmdiff-cli[semantic]\"' (package install), or run with --no-semantic."
 )
 
+# Fully qualified name plus a pinned revision so a compromised or
+# force-pushed upstream Hub repo cannot silently change the weights we load.
+_EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+_EMBEDDING_MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+
 _model = None
 _model_lock = Lock()
 
@@ -28,7 +33,10 @@ def _get_model():
                 Console().print(
                     "[dim]Loading embedding model (first run only)...[/dim]"
                 )
-                _model = SentenceTransformer("all-MiniLM-L6-v2")
+                _model = SentenceTransformer(
+                    _EMBEDDING_MODEL_NAME,
+                    revision=_EMBEDDING_MODEL_REVISION,
+                )
     return _model
 
 
