@@ -187,6 +187,42 @@ def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):
     assert cfg.side_b.model_cfg.base_url == "http://side-b:11434"
 
 
+def test_cli_seed_applies_to_both_sides(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--seed",
+            "7",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.side_a.model_cfg.seed == 7
+    assert cfg.side_b.model_cfg.seed == 7
+
+
 def test_cli_base_url_a_falls_back_to_base_url(tmp_path, monkeypatch):
     prompt_a = tmp_path / "prompt-a.txt"
     prompt_b = tmp_path / "prompt-b.txt"

@@ -404,6 +404,14 @@ def main(
         min=1,
         help="Max generation tokens for side B",
     ),
+    seed: Optional[int] = typer.Option(
+        None,
+        "--seed",
+        help=(
+            "Fixed sampling seed passed to Ollama for both sides. "
+            "Combine with --temperature 0 for reproducible comparisons."
+        ),
+    ),
     concurrency: int = typer.Option(
         3,
         "--concurrency",
@@ -547,12 +555,14 @@ def main(
         base_url=resolved_base_url_a,
         temperature=temperature_a if temperature_a is not None else temperature,
         max_tokens=max_tokens_a if max_tokens_a is not None else max_tokens,
+        seed=seed,
     )
     model_cfg_b = ModelConfig(
         model=resolved_model_b,
         base_url=resolved_base_url_b,
         temperature=temperature_b if temperature_b is not None else temperature,
         max_tokens=max_tokens_b if max_tokens_b is not None else max_tokens,
+        seed=seed,
     )
 
     run_cfg = RunConfig(

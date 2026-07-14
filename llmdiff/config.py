@@ -27,6 +27,7 @@ class ModelConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     temperature: float | None = None
     max_tokens: int = 1024
+    seed: int | None = None  # fixed sampling seed for reproducible runs
 
     @field_validator("temperature")
     @classmethod

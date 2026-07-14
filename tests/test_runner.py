@@ -106,6 +106,44 @@ async def test_call_ollama_handles_missing_message_content():
 
 
 @pytest.mark.asyncio
+async def test_call_ollama_includes_seed_in_request_options():
+    captured = {}
+
+    class CapturingClient:
+        async def post(self, url, json=None, timeout=None):
+            captured["payload"] = json
+            return _response(
+                "POST", url, 200, json_body={"message": {"content": "ok"}}
+            )
+
+    side = SideConfig(
+        prompt="Prompt",
+        model_cfg=ModelConfig(model="llama3.2", seed=42),
+    )
+
+    result = await _call_ollama(CapturingClient(), side, [])
+
+    assert result == "ok"
+    assert captured["payload"]["options"]["seed"] == 42
+
+
+@pytest.mark.asyncio
+async def test_call_ollama_omits_seed_when_unset():
+    captured = {}
+
+    class CapturingClient:
+        async def post(self, url, json=None, timeout=None):
+            captured["payload"] = json
+            return _response(
+                "POST", url, 200, json_body={"message": {"content": "ok"}}
+            )
+
+    await _call_ollama(CapturingClient(), _side(), [])
+
+    assert "seed" not in captured["payload"]["options"]
+
+
+@pytest.mark.asyncio
 async def test_check_models_available_handles_http_status_error():
     client = FakeAsyncClient(
         get_response=_response(

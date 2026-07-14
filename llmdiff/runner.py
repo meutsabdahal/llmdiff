@@ -118,6 +118,8 @@ async def _call_ollama(
     }
     if side.model_cfg.temperature is not None:
         payload["options"]["temperature"] = side.model_cfg.temperature
+    if side.model_cfg.seed is not None:
+        payload["options"]["seed"] = side.model_cfg.seed
 
     for attempt in range(1, total_attempts + 1):
         try:
