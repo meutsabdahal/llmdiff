@@ -82,6 +82,17 @@ def test_load_cases_reports_context_validation_details(tmp_path, capsys):
     assert "context.0.role" in captured.err
 
 
+def test_load_cases_rejects_non_utf8_file(tmp_path, capsys):
+    path = tmp_path / "cases.json"
+    path.write_bytes(b"\xff\xfe\x00bad")
+
+    with pytest.raises(typer.Exit):
+        cli._load_cases(path)
+
+    captured = capsys.readouterr()
+    assert "not valid UTF-8" in captured.err
+
+
 def test_load_cases_accepts_valid_context_messages(tmp_path):
     path = tmp_path / "cases.json"
     path.write_text(

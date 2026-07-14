@@ -205,7 +205,16 @@ def _load_cases(path: Path) -> list[TestCase]:
         typer.echo(f"Error: inputs file not found: {path}", err=True)
         raise typer.Exit(1)
     try:
-        raw = json.loads(path.read_text())
+        raw_text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        typer.echo(f"Error: inputs file is not valid UTF-8: {path}", err=True)
+        raise typer.Exit(1)
+    except OSError as e:
+        typer.echo(f"Error: failed to read inputs file {path}: {e}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        raw = json.loads(raw_text)
     except json.JSONDecodeError as e:
         typer.echo(f"Error: invalid JSON in {path}: {e}", err=True)
         raise typer.Exit(1)
