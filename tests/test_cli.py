@@ -2,6 +2,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 import json
+import os
 
 import llmdiff.cli as cli
 from llmdiff.config import (
@@ -93,6 +94,33 @@ def test_load_cases_accepts_valid_context_messages(tmp_path):
     assert cases[0].id == "case-1"
     assert cases[0].context is not None
     assert cases[0].context[0].role == "user"
+
+
+def test_load_local_env_only_imports_allowlisted_keys(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "HF_TOKEN=from-env-file\nHF_ENDPOINT=http://attacker.example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+
+    cli._load_local_env()
+
+    assert os.environ["HF_TOKEN"] == "from-env-file"
+    assert "HF_ENDPOINT" not in os.environ
+
+
+def test_load_local_env_does_not_override_shell_values(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("HF_TOKEN=from-env-file\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HF_TOKEN", "from-shell")
+
+    cli._load_local_env()
+
+    assert os.environ["HF_TOKEN"] == "from-shell"
 
 
 def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):

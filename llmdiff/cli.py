@@ -38,6 +38,17 @@ app = typer.Typer(
 )
 console = Console()
 _ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Only variables llmdiff actually uses are imported from .env files. Loading
+# arbitrary keys would let a .env in an untrusted working directory inject
+# variables (HF_ENDPOINT, SSL_CERT_FILE, ...) that redirect or weaken the
+# embedding-model download.
+_ENV_ALLOWED_KEYS = frozenset(
+    {
+        "HF_TOKEN",
+        "TRANSFORMERS_VERBOSITY",
+        "HF_HUB_DISABLE_PROGRESS_BARS",
+    }
+)
 
 
 def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
@@ -88,13 +99,22 @@ def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
     return key, parsed_value
 
 
+def _env_file_candidates() -> list[Path]:
+    candidates = [Path.cwd() / ".env"]
+
+    # The package parent is only a meaningful .env location for source
+    # checkouts; on a pip install it would be site-packages, where a stray
+    # .env should never be picked up.
+    source_root = Path(__file__).resolve().parents[1]
+    if (source_root / "pyproject.toml").is_file():
+        candidates.append(source_root / ".env")
+
+    return candidates
+
+
 def _load_local_env() -> None:
-    """Loads .env variables if they are not already set in the shell."""
-    candidates = [
-        Path.cwd() / ".env",
-        Path(__file__).resolve().parents[1] / ".env",
-    ]
-    env_path = next((p for p in candidates if p.exists()), None)
+    """Loads supported .env variables if they are not already set in the shell."""
+    env_path = next((p for p in _env_file_candidates() if p.exists()), None)
     if env_path is None:
         return
 
@@ -125,7 +145,7 @@ def _load_local_env() -> None:
             continue
 
         key, value = parsed
-        if key not in os.environ:
+        if key in _ENV_ALLOWED_KEYS and key not in os.environ:
             os.environ[key] = value
 
 
