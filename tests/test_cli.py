@@ -96,6 +96,12 @@ def test_load_cases_accepts_valid_context_messages(tmp_path):
     assert cases[0].context[0].role == "user"
 
 
+def test_parse_env_assignment_unescapes_quoted_values():
+    assert cli._parse_env_assignment('KEY="a\\"b"') == ("KEY", 'a"b')
+    assert cli._parse_env_assignment("KEY='a\\'b'") == ("KEY", "a'b")
+    assert cli._parse_env_assignment('KEY="a\\\\b"') == ("KEY", "a\\b")
+
+
 def test_load_local_env_only_imports_allowlisted_keys(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(

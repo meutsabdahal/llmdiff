@@ -87,7 +87,11 @@ def _parse_env_assignment(raw_line: str) -> tuple[str, str] | None:
         if closing_index is None:
             raise ValueError("unterminated quoted value")
 
-        parsed_value = value[1:closing_index]
+        # Drop the backslashes used to escape quotes/backslashes so the
+        # stored value matches what the author quoted.
+        parsed_value = re.sub(
+            rf"\\([\\{quote}])", r"\1", value[1:closing_index]
+        )
         trailing = value[closing_index + 1 :].strip()
         if trailing and not trailing.startswith("#"):
             raise ValueError("unexpected characters after quoted value")
