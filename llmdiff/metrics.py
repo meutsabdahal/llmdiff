@@ -6,7 +6,7 @@ from threading import Lock
 _MISSING_SEMANTIC_DEPS_MSG = (
     "Semantic scoring dependencies are not installed. "
     "Install with 'uv sync --all-extras' (source checkout) or "
-    "'pip install llmdiff[semantic]' (package install), or run with --no-semantic."
+    "'pip install \"llmdiff-cli[semantic]\"' (package install), or run with --no-semantic."
 )
 
 _model = None
