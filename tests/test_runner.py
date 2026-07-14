@@ -1,5 +1,5 @@
-import pytest
 import httpx
+import pytest
 
 import llmdiff.runner as runner
 from llmdiff.config import ModelConfig, RunConfig, SideConfig, TestCase

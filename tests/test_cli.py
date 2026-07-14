@@ -1,8 +1,9 @@
+import json
+import os
+
 import pytest
 import typer
 from typer.testing import CliRunner
-import json
-import os
 
 import llmdiff.cli as cli
 from llmdiff.config import (
@@ -10,10 +11,11 @@ from llmdiff.config import (
     OutputFormat,
     RunConfig,
     SideConfig,
+)
+from llmdiff.config import (
     TestCase as PromptCase,
 )
 from llmdiff.differ import DiffResult
-
 
 runner = CliRunner()
 

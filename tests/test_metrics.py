@@ -1,4 +1,3 @@
-import pytest
 import llmdiff.metrics as metrics
 from llmdiff.metrics import compute_summary
 

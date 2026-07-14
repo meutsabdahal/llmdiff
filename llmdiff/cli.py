@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
+import math
 import os
 import re
-import math
-from importlib.metadata import PackageNotFoundError, version as _package_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Optional
 
@@ -13,11 +15,11 @@ import typer
 from pydantic import ValidationError
 from rich.console import Console
 from rich.progress import (
+    BarColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
-    BarColumn,
     TaskProgressColumn,
+    TextColumn,
 )
 
 from llmdiff.config import (
@@ -28,16 +30,16 @@ from llmdiff.config import (
     SideConfig,
     TestCase,
 )
+from llmdiff.metrics import compute_summary
+from llmdiff.renderers.html import render_html
+from llmdiff.renderers.json_ import render_json
+from llmdiff.renderers.terminal import render_case_inline, render_summary
 from llmdiff.runner import (
-    run_diffs,
-    configure_request_policy,
     MAX_RETRY_ATTEMPTS,
     MAX_RETRY_BACKOFF_SECONDS,
+    configure_request_policy,
+    run_diffs,
 )
-from llmdiff.metrics import compute_summary
-from llmdiff.renderers.terminal import render_case_inline, render_summary
-from llmdiff.renderers.json_ import render_json
-from llmdiff.renderers.html import render_html
 
 app = typer.Typer(
     name="llmdiff",

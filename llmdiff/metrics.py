@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from collections.abc import Iterable
 from dataclasses import dataclass
 from threading import Lock
@@ -102,8 +103,6 @@ class Summary:
 
 
 def compute_summary(results) -> Summary:
-    from llmdiff.differ import DiffResult
-
     changed = [r for r in results if r.changed]
     unchanged = [r for r in results if not r.changed]
 

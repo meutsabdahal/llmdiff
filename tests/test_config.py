@@ -3,10 +3,12 @@ from pydantic import ValidationError
 
 from llmdiff.config import (
     ModelConfig,
-    SideConfig,
-    TestCase as PromptCase,
-    RunConfig,
     OutputFormat,
+    RunConfig,
+    SideConfig,
+)
+from llmdiff.config import (
+    TestCase as PromptCase,
 )
 
 

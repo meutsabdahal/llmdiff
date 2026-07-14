@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
+
 import httpx
+
 from llmdiff.config import RunConfig, SideConfig, TestCase
 from llmdiff.differ import DiffResult, compute_diff
 from llmdiff.metrics import semantic_similarities
-
 
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_RETRIES = 2

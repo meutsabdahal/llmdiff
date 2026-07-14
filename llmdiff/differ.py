@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import difflib
 import re
 from dataclasses import dataclass

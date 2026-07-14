@@ -1,6 +1,5 @@
-import pytest
 from llmdiff.config import ChangedWhen
-from llmdiff.differ import compute_diff, _structural_diff
+from llmdiff.differ import _structural_diff, compute_diff
 
 
 def test_identical_responses_not_changed():

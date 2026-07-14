@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import json
+
 from llmdiff.differ import DiffResult
 from llmdiff.metrics import Summary
 
