@@ -91,11 +91,6 @@ def semantic_similarities(
     return scores
 
 
-def semantic_similarity(a: str, b: str) -> float:
-    """Returns cosine similarity [0, 1] between two strings."""
-    return semantic_similarities([(a, b)], batch_size=1)[0]
-
-
 @dataclass
 class Summary:
     total: int

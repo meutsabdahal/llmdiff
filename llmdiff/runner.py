@@ -330,17 +330,6 @@ async def _run_case_responses(
     return await asyncio.gather(*[run_case_and_track(case) for case in cfg.cases])
 
 
-async def run_all(cfg: RunConfig) -> list[tuple[TestCase, str, str]]:
-    """
-    Run all test cases concurrently (up to cfg.concurrency at a time).
-    Returns list of (case, response_a, response_b).
-    """
-    semaphore = asyncio.Semaphore(cfg.concurrency)
-
-    async with httpx.AsyncClient() as client:
-        return await _run_case_responses(client, semaphore, cfg)
-
-
 async def run_diffs(
     cfg: RunConfig,
     on_case_completed: Callable[[TestCase], None] | None = None,
