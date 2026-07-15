@@ -109,3 +109,25 @@ def test_semantic_similarities_skips_model_load_for_empty_iterable(monkeypatch):
     scores = metrics.semantic_similarities(iter(()), batch_size=4)
 
     assert scores == []
+
+
+def test_model_loading_notice_goes_to_stderr_not_stdout(monkeypatch, capsys):
+    """The notice must not pollute stdout: piped --format json output
+    (llmdiff ... --format json | jq) has to stay parseable."""
+    import sys
+    import types
+
+    class FakeSentenceTransformer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = FakeSentenceTransformer  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+    monkeypatch.setattr(metrics, "_model", None)
+
+    metrics._get_model()
+
+    captured = capsys.readouterr()
+    assert "Loading embedding model" not in captured.out
+    assert "Loading embedding model" in captured.err
