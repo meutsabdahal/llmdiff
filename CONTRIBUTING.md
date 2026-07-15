@@ -67,15 +67,16 @@ git-ignored; never commit tokens or other secrets.
 
 ## Quality gates
 
-These mirror what CI runs. Please run them before pushing:
+Please run these before pushing:
 
 ```bash
 uv run pytest tests/ -v      # test suite
 uv run ruff check .          # lint (includes unused imports and import order)
 uv run mypy                  # type checking (no error-code overrides)
-uv build                     # package build
-uv run twine check --strict dist/*
 ```
+
+CI runs the same checks on every pull request, plus packaging checks that
+maintainers take care of.
 
 ## Testing
 
