@@ -208,6 +208,45 @@ def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):
     assert cfg.side_b.model_cfg.base_url == "http://side-b:11434"
 
 
+@pytest.mark.parametrize(
+    ("extra_args", "expected_use_cache"),
+    [([], True), (["--no-cache"], False)],
+)
+def test_cli_no_cache_flag_controls_caching(
+    tmp_path, monkeypatch, extra_args, expected_use_cache
+):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **kwargs):
+        captured["use_cache"] = kwargs["use_cache"]
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            *extra_args,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["use_cache"] is expected_use_cache
+
+
 def test_cli_seed_applies_to_both_sides(tmp_path, monkeypatch):
     prompt_a = tmp_path / "prompt-a.txt"
     prompt_b = tmp_path / "prompt-b.txt"

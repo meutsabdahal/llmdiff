@@ -167,6 +167,27 @@ llmdiff ... --format html --output report.html   # save HTML report
 llmdiff ... --no-semantic
 ```
 
+### Response caching
+
+Model responses are cached in `~/.cache/llmdiff/` (or `$XDG_CACHE_HOME/llmdiff/`),
+keyed on the system prompt, model, endpoint, sampling parameters, and test case.
+Re-running with different `--threshold`, `--changed-when`, `--filter`, or `--format`
+values reuses the cached responses instead of re-querying the models — a fully
+cached run does not even need Ollama running.
+
+```bash
+# Bypass the cache: always query the models and do not store responses
+llmdiff ... --no-cache
+
+# Clear the cache
+rm -r ~/.cache/llmdiff
+```
+
+Any change to a prompt file, model, endpoint, or sampling parameter produces new
+cache keys automatically, so stale responses are never reused. Note that with a
+nonzero temperature and no `--seed`, cached responses freeze one particular sample;
+use `--no-cache` when you want fresh generations.
+
 ### Large output controls (inline format)
 
 ```bash
