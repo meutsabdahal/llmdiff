@@ -35,6 +35,7 @@ from llmdiff.config import (
 from llmdiff.metrics import compute_summary
 from llmdiff.renderers.html import render_html
 from llmdiff.renderers.json_ import render_json
+from llmdiff.renderers.markdown import render_markdown
 from llmdiff.renderers.terminal import render_case_inline, render_summary
 from llmdiff.runner import (
     MAX_RETRY_ATTEMPTS,
@@ -535,7 +536,7 @@ def main(
         OutputFormat.INLINE,
         "--format",
         case_sensitive=False,
-        help="Output format: inline, json, or html",
+        help="Output format: inline, json, html, or markdown",
     ),
     output: Optional[Path] = typer.Option(None, "--output"),
     version: bool = typer.Option(
@@ -558,7 +559,9 @@ def main(
     _bootstrap_runtime_env()
 
     if output is not None and output_format == OutputFormat.INLINE:
-        typer.echo("Error: --output requires --format json or --format html.", err=True)
+        typer.echo(
+            "Error: --output requires --format json, html, or markdown.", err=True
+        )
         raise typer.Exit(1)
 
     if no_semantic and (
@@ -738,15 +741,14 @@ async def _run(
         fail_if_any_below_threshold=fail_if_any_below_threshold,
     )
 
-    if cfg.output_format == OutputFormat.JSON:
-        out = render_json(results, summary)
-        if output_path:
-            _write_output_report(output_path, out)
-            console.print(f"[dim]Report saved to {output_path}[/dim]")
-        else:
-            print(out)
-    elif cfg.output_format == OutputFormat.HTML:
-        out = render_html(results, summary)
+    report_renderers = {
+        OutputFormat.JSON: render_json,
+        OutputFormat.HTML: render_html,
+        OutputFormat.MARKDOWN: render_markdown,
+    }
+    renderer = report_renderers.get(cfg.output_format)
+    if renderer is not None:
+        out = renderer(results, summary)
         if output_path:
             _write_output_report(output_path, out)
             console.print(f"[dim]Report saved to {output_path}[/dim]")

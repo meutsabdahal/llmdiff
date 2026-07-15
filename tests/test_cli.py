@@ -63,7 +63,7 @@ def test_cli_rejects_output_for_inline_format():
     )
 
     assert result.exit_code == 1
-    assert "--output requires --format json or --format html." in result.output
+    assert "--output requires --format json, html, or markdown." in result.output
 
 
 def test_cli_changed_when_semantic_requires_threshold():

@@ -157,8 +157,10 @@ so they cannot be used with `--no-semantic`.
 llmdiff ... --format inline        # default terminal output
 llmdiff ... --format json          # machine-readable, for scripting
 llmdiff ... --format html          # standalone HTML report
+llmdiff ... --format markdown      # GitHub-flavored Markdown (job summaries, PR comments)
 llmdiff ... --format json --output report.json   # save JSON report
 llmdiff ... --format html --output report.html   # save HTML report
+llmdiff ... --format markdown --output report.md # save Markdown report
 ```
 
 ### Skip semantic scoring (faster)
@@ -247,6 +249,28 @@ llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt 
 ```bash
 # Example: allow minor drift, but fail on low semantic quality
 llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt --inputs tests/regression.json --model llama3.2 --fail-if-avg-below 0.80 --fail-if-any-below-threshold 0.60
+```
+
+`--format markdown` produces a report ready for GitHub Actions job summaries
+or PR comments:
+
+```yaml
+- name: Compare prompts
+  run: |
+    llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt \
+      --inputs tests/regression.json --model llama3.2 \
+      --format markdown --output report.md --fail-on-changed
+
+- name: Publish job summary
+  if: always()
+  run: cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+- name: Comment on PR
+  if: always() && github.event_name == 'pull_request'
+  run: gh pr comment "$PR_NUMBER" --body-file report.md
+  env:
+    GH_TOKEN: ${{ github.token }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
 ```
 
 ---
