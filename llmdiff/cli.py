@@ -22,6 +22,7 @@ from rich.progress import (
     TextColumn,
 )
 
+from llmdiff.cache import ResponseCache, default_cache_dir
 from llmdiff.config import (
     ChangedWhen,
     ModelConfig,
@@ -452,6 +453,14 @@ def main(
             f"(capped at {MAX_RETRY_BACKOFF_SECONDS:.1f}s)."
         ),
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help=(
+            "Bypass the response cache: always query the models and do not "
+            f"store responses (cache lives in {default_cache_dir()})."
+        ),
+    ),
     no_semantic: bool = typer.Option(False, "--no-semantic"),
     semantic_batch_size: int = typer.Option(
         24,
@@ -613,6 +622,7 @@ def main(
             fail_on_changed=fail_on_changed,
             fail_if_avg_below=fail_if_avg_below,
             fail_if_any_below_threshold=fail_if_any_below_threshold,
+            use_cache=not no_cache,
         )
     )
 
@@ -623,6 +633,7 @@ async def _run(
     fail_on_changed: bool = False,
     fail_if_avg_below: Optional[float] = None,
     fail_if_any_below_threshold: Optional[float] = None,
+    use_cache: bool = True,
 ):
     # Build labels that are informative for both use cases:
     # - same model, different prompts: show "prompt-a / llama3.2" vs "prompt-b / llama3.2"
@@ -633,6 +644,7 @@ async def _run(
         math.ceil(len(cfg.cases) / cfg.semantic_batch_size) if cfg.semantic else 0
     )
     total_steps = len(cfg.cases) + semantic_chunks
+    cache = ResponseCache() if use_cache else None
 
     with Progress(
         SpinnerColumn(),
@@ -672,12 +684,14 @@ async def _run(
                         # Endpoints and models are identical across chunks, so
                         # the availability preflight only needs to run once.
                         check_models=chunk_index == 0,
+                        cache=cache,
                     )
                     results.extend(chunk_results)
             else:
                 results = await run_diffs(
                     cfg,
                     on_case_completed=on_case_completed,
+                    cache=cache,
                 )
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")

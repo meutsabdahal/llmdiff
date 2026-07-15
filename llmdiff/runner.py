@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 import httpx
 
+from llmdiff.cache import ResponseCache
 from llmdiff.config import RunConfig, SideConfig, TestCase
 from llmdiff.differ import DiffResult, compute_diff
 from llmdiff.metrics import semantic_similarities
@@ -300,19 +301,50 @@ async def ensure_models_available(client: httpx.AsyncClient, cfg: RunConfig) -> 
         await check_models_available(client, endpoint, models_needed)
 
 
+def _case_messages(case: TestCase) -> list[dict[str, str]]:
+    messages = [m.model_dump() for m in (case.context or [])]
+    messages.append({"role": "user", "content": case.user})
+    return messages
+
+
+def _all_responses_cached(cfg: RunConfig, cache: ResponseCache | None) -> bool:
+    if cache is None:
+        return False
+
+    for case in cfg.cases:
+        messages = _case_messages(case)
+        for side in (cfg.side_a, cfg.side_b):
+            if cache.get(side, messages) is None:
+                return False
+
+    return True
+
+
 async def run_case(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
     cfg: RunConfig,
     case: TestCase,
+    cache: ResponseCache | None = None,
 ) -> tuple[str, str]:
     """Run both sides for a single test case. Returns (response_a, response_b)."""
-    messages = [m.model_dump() for m in (case.context or [])]
-    messages.append({"role": "user", "content": case.user})
+    messages = _case_messages(case)
+
+    async def side_response(side: SideConfig) -> str:
+        if cache is not None:
+            cached = cache.get(side, messages)
+            if cached is not None:
+                return cached
+
+        response = await _call_ollama(client, side, messages)
+        if cache is not None:
+            cache.set(side, messages, response)
+        return response
+
     async with semaphore:
         resp_a, resp_b = await asyncio.gather(
-            _call_ollama(client, cfg.side_a, messages),
-            _call_ollama(client, cfg.side_b, messages),
+            side_response(cfg.side_a),
+            side_response(cfg.side_b),
         )
     return resp_a, resp_b
 
@@ -322,9 +354,10 @@ async def _run_case_responses(
     semaphore: asyncio.Semaphore,
     cfg: RunConfig,
     on_case_completed: Callable[[TestCase], None] | None = None,
+    cache: ResponseCache | None = None,
 ) -> list[tuple[TestCase, str, str]]:
     async def run_case_and_track(case: TestCase) -> tuple[TestCase, str, str]:
-        resp_a, resp_b = await run_case(client, semaphore, cfg, case)
+        resp_a, resp_b = await run_case(client, semaphore, cfg, case, cache=cache)
         if on_case_completed is not None:
             on_case_completed(case)
         return case, resp_a, resp_b
@@ -338,6 +371,7 @@ async def run_diffs(
     on_semantic_scoring_start: Callable[[], None] | None = None,
     on_semantic_scoring_complete: Callable[[], None] | None = None,
     check_models: bool = True,
+    cache: ResponseCache | None = None,
 ) -> list[DiffResult]:
     """
     Execute a full llmdiff run and return computed diffs.
@@ -345,21 +379,24 @@ async def run_diffs(
     Steps:
     1. Validate required models are available for each configured endpoint
        (skipped when check_models is False, e.g. for follow-up chunks of a
-       run that already validated them).
-    2. Run all prompt cases concurrently.
+       run that already validated them, or when every response is already
+       cached — a fully cached run must not require a reachable Ollama).
+    2. Run all prompt cases concurrently, reusing cached responses when a
+       cache is provided.
     3. Optionally compute semantic similarity scores in batches.
     4. Compute line-level diffs and change status for each case.
     """
     semaphore = asyncio.Semaphore(cfg.concurrency)
 
     async with httpx.AsyncClient() as client:
-        if check_models:
+        if check_models and not _all_responses_cached(cfg, cache):
             await ensure_models_available(client, cfg)
         responses = await _run_case_responses(
             client,
             semaphore,
             cfg,
             on_case_completed=on_case_completed,
+            cache=cache,
         )
 
     similarities: list[float | None]
