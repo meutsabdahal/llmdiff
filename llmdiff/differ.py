@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 
 from llmdiff.config import ChangedWhen
+from llmdiff.metrics import StabilityStats
 
 
 @dataclass
@@ -14,10 +15,11 @@ class DiffResult:
     response_b: str
     unified_diff: list[str]  # line-level output of difflib.unified_diff
     changed: bool
-    similarity: float | None  # None if --no-semantic
+    similarity: float | None  # None if --no-semantic; mean over runs in stability mode
     length_a: int  # word count
     length_b: int
     structural_changes: dict  # keys: lists, code_blocks, length_pct
+    stability: StabilityStats | None = None  # set when runs > 1
 
 
 _ORDERED_LIST_MARKER_RE = re.compile(r"^\d+[.)](?:\s|$)")
@@ -60,8 +62,14 @@ def compute_diff(
     similarity: float | None,
     threshold: float | None,
     changed_when: ChangedWhen = ChangedWhen.ANY,
+    stability: StabilityStats | None = None,
 ) -> DiffResult:
-    """Compute line-level diff and change status for one case."""
+    """Compute line-level diff and change status for one case.
+
+    In stability mode, response_a/response_b are the first sample of each
+    side (shown as the representative diff) and similarity is the mean
+    cross-side similarity over all runs.
+    """
     # No keepends: with lineterm="" the diff needs no trailing newlines, and
     # keeping them made every renderer emit a blank line after each diff row.
     a_lines = response_a.splitlines()
@@ -103,4 +111,5 @@ def compute_diff(
         length_a=structural["word_count_a"],
         length_b=structural["word_count_b"],
         structural_changes=structural,
+        stability=stability,
     )

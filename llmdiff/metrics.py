@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import math
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from threading import Lock
 
@@ -92,6 +93,103 @@ def semantic_similarities(
     return scores
 
 
+# Two-sided 95% critical values of Student's t-distribution, keyed by degrees
+# of freedom. Covers df 1..24, i.e. up to MAX_STABILITY_RUNS samples; the
+# normal approximation is the defensive fallback beyond that.
+_T_CRITICAL_95 = {
+    1: 12.706,
+    2: 4.303,
+    3: 3.182,
+    4: 2.776,
+    5: 2.571,
+    6: 2.447,
+    7: 2.365,
+    8: 2.306,
+    9: 2.262,
+    10: 2.228,
+    11: 2.201,
+    12: 2.179,
+    13: 2.160,
+    14: 2.145,
+    15: 2.131,
+    16: 2.120,
+    17: 2.110,
+    18: 2.101,
+    19: 2.093,
+    20: 2.086,
+    21: 2.080,
+    22: 2.074,
+    23: 2.069,
+    24: 2.064,
+}
+_Z_CRITICAL_95 = 1.960
+
+
+@dataclass
+class StabilityStats:
+    """Per-case variance metrics from a stability-mode run (N samples/side).
+
+    beyond_noise is True when even the 95% CI upper bound of the cross-side
+    similarity stays below the lower of the two self-consistency scores: the
+    prompts' outputs differ more than either prompt differs from itself, so
+    the change cannot be explained by sampling noise alone.
+    """
+
+    runs: int
+    similarity_mean: float
+    similarity_std: float
+    ci95_low: float
+    ci95_high: float
+    self_similarity_a: float
+    self_similarity_b: float
+    beyond_noise: bool
+
+
+def _mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values)
+
+
+def compute_stability_stats(
+    cross_similarities: Sequence[float],
+    self_similarities_a: Sequence[float],
+    self_similarities_b: Sequence[float],
+) -> StabilityStats:
+    """Aggregate similarity scores from N repeated runs of one case.
+
+    cross_similarities holds sim(A_i, B_i) for each run i; the self lists
+    hold pairwise similarities within one side's samples (its noise floor).
+    """
+    runs = len(cross_similarities)
+    if runs < 2:
+        raise ValueError("stability stats require at least 2 runs")
+    if not self_similarities_a or not self_similarities_b:
+        raise ValueError("stability stats require self-similarity scores")
+
+    mean = _mean(cross_similarities)
+    variance = sum((s - mean) ** 2 for s in cross_similarities) / (runs - 1)
+    std = math.sqrt(variance)
+
+    t_critical = _T_CRITICAL_95.get(runs - 1, _Z_CRITICAL_95)
+    half_width = t_critical * std / math.sqrt(runs)
+    ci95_low = max(0.0, mean - half_width)
+    ci95_high = min(1.0, mean + half_width)
+
+    self_a = _mean(self_similarities_a)
+    self_b = _mean(self_similarities_b)
+    noise_floor = min(self_a, self_b)
+
+    return StabilityStats(
+        runs=runs,
+        similarity_mean=mean,
+        similarity_std=std,
+        ci95_low=ci95_low,
+        ci95_high=ci95_high,
+        self_similarity_a=self_a,
+        self_similarity_b=self_b,
+        beyond_noise=ci95_high < noise_floor,
+    )
+
+
 @dataclass
 class Summary:
     total: int
@@ -100,6 +198,7 @@ class Summary:
     avg_similarity: float | None
     most_diverged: tuple[str, float] | None  # (case_id, similarity)
     least_changed: tuple[str, float] | None
+    beyond_noise: int | None = None  # stability mode only
 
 
 def compute_summary(results) -> Summary:
@@ -112,6 +211,13 @@ def compute_summary(results) -> Summary:
     most_diverged = min(sims, key=lambda x: x[1]) if sims else None
     least_changed = max(sims, key=lambda x: x[1]) if sims else None
 
+    stability = [
+        s for r in results if (s := getattr(r, "stability", None)) is not None
+    ]
+    beyond_noise = (
+        sum(1 for s in stability if s.beyond_noise) if stability else None
+    )
+
     return Summary(
         total=len(results),
         changed=len(changed),
@@ -119,4 +225,5 @@ def compute_summary(results) -> Summary:
         avg_similarity=avg_sim,
         most_diverged=most_diverged,
         least_changed=least_changed,
+        beyond_noise=beyond_noise,
     )

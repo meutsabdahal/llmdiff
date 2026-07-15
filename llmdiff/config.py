@@ -5,6 +5,10 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+# Upper bound for stability-mode runs per case; keeps the t-distribution
+# table in metrics.py exhaustive and the request volume sane.
+MAX_STABILITY_RUNS = 25
+
 
 class OutputFormat(str, Enum):
     INLINE = "inline"
@@ -83,6 +87,7 @@ class RunConfig(BaseModel):
     side_b: SideConfig
     cases: list[TestCase]
     concurrency: int = 3  # conservative default for local models
+    runs: int = 1  # >1 enables stability mode (N samples per case per side)
     semantic: bool = True
     semantic_batch_size: int = 24
     output_format: OutputFormat = OutputFormat.INLINE
@@ -104,6 +109,13 @@ class RunConfig(BaseModel):
     def concurrency_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("concurrency must be at least 1")
+        return v
+
+    @field_validator("runs")
+    @classmethod
+    def runs_range(cls, v: int) -> int:
+        if not (1 <= v <= MAX_STABILITY_RUNS):
+            raise ValueError(f"runs must be between 1 and {MAX_STABILITY_RUNS}")
         return v
 
     @field_validator("semantic_batch_size")

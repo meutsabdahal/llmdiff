@@ -167,6 +167,36 @@ llmdiff ... --format html --output report.html   # save HTML report
 llmdiff ... --no-semantic
 ```
 
+### Stability mode (separate noise from regressions)
+
+With a stochastic model, a single comparison can't tell you whether a low
+similarity score is a real prompt regression or just sampling luck. Stability
+mode samples each case N times per side and reports the distribution:
+
+```bash
+llmdiff ... --runs 5 --seed 42
+```
+
+Per case you get:
+
+- **similarity mean ± std** across the N run pairs, with a 95% confidence
+  interval (Student's t),
+- **self-similarity** per side — how much each prompt's own samples differ
+  from each other, i.e. the sampling-noise floor,
+- a **beyond noise / within noise** verdict: the change is flagged as real
+  only when the CI upper bound of the cross-side similarity is still below
+  the lower self-similarity. If a prompt disagrees with itself as much as it
+  disagrees with the other prompt, the diff is noise.
+
+With `--seed S`, run `i` uses seed `S + i`, so repeated samples are
+reproducible but distinct. (Don't combine `--runs` with `--temperature 0` —
+deterministic decoding makes every sample identical.) Stability mode requires
+semantic scoring, and each sample is cached individually, so re-runs are free.
+
+The case's `similarity` (used by `--threshold` and the `--fail-*` policies)
+becomes the mean over runs, which makes CI gates far less flaky. The JSON
+report gains a per-case `stability` object and a summary `beyond_noise_count`.
+
 ### Response caching
 
 Model responses are cached in `~/.cache/llmdiff/` (or `$XDG_CACHE_HOME/llmdiff/`),
