@@ -247,6 +247,59 @@ def test_cli_no_cache_flag_controls_caching(
     assert captured["use_cache"] is expected_use_cache
 
 
+def test_cli_runs_flag_enables_stability_mode(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--runs",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cfg"].runs == 5
+
+
+def test_cli_runs_requires_semantic_scoring():
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "missing-a.txt",
+            "--prompt-b",
+            "missing-b.txt",
+            "--inputs",
+            "missing-cases.json",
+            "--runs",
+            "3",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--runs requires semantic scoring" in result.output
+
+
 def test_cli_seed_applies_to_both_sides(tmp_path, monkeypatch):
     prompt_a = tmp_path / "prompt-a.txt"
     prompt_b = tmp_path / "prompt-b.txt"

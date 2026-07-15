@@ -24,6 +24,7 @@ from rich.progress import (
 
 from llmdiff.cache import ResponseCache, default_cache_dir
 from llmdiff.config import (
+    MAX_STABILITY_RUNS,
     ChangedWhen,
     ModelConfig,
     OutputFormat,
@@ -428,6 +429,19 @@ def main(
         min=1,
         help="Maximum number of test cases to run concurrently (must be >= 1)",
     ),
+    runs: int = typer.Option(
+        1,
+        "--runs",
+        min=1,
+        max=MAX_STABILITY_RUNS,
+        help=(
+            "Stability mode: sample each case this many times per side and "
+            "report similarity variance, a 95% confidence interval, and "
+            "per-side self-consistency, separating sampling noise from real "
+            "prompt changes. With --seed S, run i uses seed S+i so repeated "
+            "samples are reproducible but distinct."
+        ),
+    ),
     request_timeout: float = typer.Option(
         120.0,
         "--request-timeout",
@@ -565,6 +579,14 @@ def main(
         )
         raise typer.Exit(1)
 
+    if runs > 1 and no_semantic:
+        typer.echo(
+            "Error: --runs requires semantic scoring to measure variance "
+            "(remove --no-semantic).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     resolved_model_a = model_a or model
     resolved_model_b = model_b or model
     resolved_base_url_a = base_url_a or base_url
@@ -601,11 +623,19 @@ def main(
         seed=seed,
     )
 
+    if runs > 1 and model_cfg_a.temperature == 0 and model_cfg_b.temperature == 0:
+        console.print(
+            "[yellow]Warning:[/yellow] --temperature 0 makes generation "
+            "deterministic, so repeated --runs samples will be identical "
+            "(zero variance). Use a nonzero temperature for stability mode."
+        )
+
     run_cfg = RunConfig(
         side_a=SideConfig(prompt=_load_prompt(prompt_a), model_cfg=model_cfg_a),
         side_b=SideConfig(prompt=_load_prompt(prompt_b), model_cfg=model_cfg_b),
         cases=_load_cases(inputs),
         concurrency=concurrency,
+        runs=runs,
         semantic=not no_semantic,
         semantic_batch_size=semantic_batch_size,
         output_format=output_format,
@@ -654,8 +684,9 @@ async def _run(
         console=console,
         transient=True,
     ) as progress:
+        runs_suffix = f" x {cfg.runs} runs" if cfg.runs > 1 else ""
         task = progress.add_task(
-            f"Running {len(cfg.cases)} cases...", total=total_steps
+            f"Running {len(cfg.cases)} cases{runs_suffix}...", total=total_steps
         )
 
         def on_case_completed(case: TestCase) -> None:

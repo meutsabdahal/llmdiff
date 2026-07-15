@@ -48,6 +48,7 @@ def test_render_json_schema_has_expected_fields():
         "avg_similarity",
         "most_diverged",
         "least_changed",
+        "beyond_noise_count",
     }
 
     assert len(payload["cases"]) == 1
@@ -62,6 +63,7 @@ def test_render_json_schema_has_expected_fields():
         "length_b",
         "length_pct",
         "diff",
+        "stability",
     }
     assert case["id"] == "case-1"
     assert case["response_a"] == "A"
