@@ -36,7 +36,11 @@ class ResponseCache:
         self.cache_dir = cache_dir if cache_dir is not None else default_cache_dir()
 
     @staticmethod
-    def _key(side: SideConfig, messages: list[dict[str, str]]) -> str:
+    def _key(
+        side: SideConfig,
+        messages: list[dict[str, str]],
+        sample: int = 0,
+    ) -> str:
         identity = {
             "version": _CACHE_SCHEMA_VERSION,
             "prompt": side.prompt,
@@ -47,6 +51,12 @@ class ResponseCache:
             "seed": side.model_cfg.seed,
             "messages": messages,
         }
+        # Stability mode stores each repeated sample under its own key so a
+        # cached re-run reproduces N distinct samples instead of one response
+        # repeated N times. Sample 0 keeps the single-run key, so a plain run
+        # and the first stability sample share a cache entry.
+        if sample > 0:
+            identity["sample"] = sample
         canonical = json.dumps(
             identity,
             sort_keys=True,
@@ -55,12 +65,22 @@ class ResponseCache:
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def _entry_path(self, side: SideConfig, messages: list[dict[str, str]]) -> Path:
-        return self.cache_dir / f"{self._key(side, messages)}.json"
+    def _entry_path(
+        self,
+        side: SideConfig,
+        messages: list[dict[str, str]],
+        sample: int = 0,
+    ) -> Path:
+        return self.cache_dir / f"{self._key(side, messages, sample)}.json"
 
-    def get(self, side: SideConfig, messages: list[dict[str, str]]) -> str | None:
+    def get(
+        self,
+        side: SideConfig,
+        messages: list[dict[str, str]],
+        sample: int = 0,
+    ) -> str | None:
         try:
-            raw = self._entry_path(side, messages).read_text(encoding="utf-8")
+            raw = self._entry_path(side, messages, sample).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 
@@ -80,12 +100,13 @@ class ResponseCache:
         side: SideConfig,
         messages: list[dict[str, str]],
         response: str,
+        sample: int = 0,
     ) -> None:
         entry = {
             "model": side.model_cfg.model,
             "response": response,
         }
-        path = self._entry_path(side, messages)
+        path = self._entry_path(side, messages, sample)
 
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)

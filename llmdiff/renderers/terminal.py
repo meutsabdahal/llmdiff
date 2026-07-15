@@ -117,6 +117,21 @@ def render_case_inline(
             )
         console.print()
 
+    # Stability metrics (only in stability mode, --runs > 1)
+    st = result.stability
+    if st is not None:
+        if st.beyond_noise:
+            verdict = "[bold red]beyond sampling noise[/bold red]"
+        else:
+            verdict = "[green]within sampling noise[/green]"
+        console.print(
+            f" [dim]Stability ({st.runs} runs): "
+            f"{st.similarity_mean:.2f} ± {st.similarity_std:.2f}  │  "
+            f"95% CI {st.ci95_low:.2f}–{st.ci95_high:.2f}  │  "
+            f"self-similarity A {st.self_similarity_a:.2f} / "
+            f"B {st.self_similarity_b:.2f}[/dim]  │  " + verdict
+        )
+
     # Metrics footer
     sc = result.structural_changes
     pct = sc["length_pct"]
@@ -154,6 +169,11 @@ def render_summary(summary: Summary):
     if summary.least_changed:
         cid, score = summary.least_changed
         console.print(f" Least changed:    [green]{cid}[/green]  ({score:.2f})")
+    if summary.beyond_noise is not None:
+        console.print(
+            f" Beyond noise:     [bold red]{summary.beyond_noise}[/bold red]"
+            "  (changes larger than sampling variance)"
+        )
 
     console.rule(style="dim")
     console.print()

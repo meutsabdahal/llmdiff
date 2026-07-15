@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from itertools import combinations
 
 import httpx
 
 from llmdiff.cache import ResponseCache
 from llmdiff.config import RunConfig, SideConfig, TestCase
 from llmdiff.differ import DiffResult, compute_diff
-from llmdiff.metrics import semantic_similarities
+from llmdiff.metrics import compute_stability_stats, semantic_similarities
 
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_RETRIES = 2
@@ -307,6 +308,21 @@ def _case_messages(case: TestCase) -> list[dict[str, str]]:
     return messages
 
 
+def _side_for_sample(side: SideConfig, sample: int) -> SideConfig:
+    """Returns the side config used for one stability-mode sample.
+
+    When a seed is configured, sample i runs with seed + i: repeated samples
+    stay reproducible without collapsing into N identical generations.
+    """
+    if sample == 0 or side.model_cfg.seed is None:
+        return side
+
+    model_cfg = side.model_cfg.model_copy(
+        update={"seed": side.model_cfg.seed + sample}
+    )
+    return side.model_copy(update={"model_cfg": model_cfg})
+
+
 def _all_responses_cached(cfg: RunConfig, cache: ResponseCache | None) -> bool:
     if cache is None:
         return False
@@ -314,8 +330,10 @@ def _all_responses_cached(cfg: RunConfig, cache: ResponseCache | None) -> bool:
     for case in cfg.cases:
         messages = _case_messages(case)
         for side in (cfg.side_a, cfg.side_b):
-            if cache.get(side, messages) is None:
-                return False
+            for sample in range(cfg.runs):
+                side_variant = _side_for_sample(side, sample)
+                if cache.get(side_variant, messages, sample=sample) is None:
+                    return False
 
     return True
 
@@ -349,6 +367,47 @@ async def run_case(
     return resp_a, resp_b
 
 
+async def run_case_samples(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    cfg: RunConfig,
+    case: TestCase,
+    cache: ResponseCache | None = None,
+) -> tuple[list[str], list[str]]:
+    """Run both sides cfg.runs times for one case (stability mode).
+
+    Samples run sequentially with the two sides in parallel, so one case
+    holds one semaphore slot and never exceeds the two concurrent requests
+    a single-run case would issue.
+    """
+    messages = _case_messages(case)
+
+    async def side_response(side: SideConfig, sample: int) -> str:
+        side_variant = _side_for_sample(side, sample)
+        if cache is not None:
+            cached = cache.get(side_variant, messages, sample=sample)
+            if cached is not None:
+                return cached
+
+        response = await _call_ollama(client, side_variant, messages)
+        if cache is not None:
+            cache.set(side_variant, messages, response, sample=sample)
+        return response
+
+    samples_a: list[str] = []
+    samples_b: list[str] = []
+    async with semaphore:
+        for sample in range(cfg.runs):
+            resp_a, resp_b = await asyncio.gather(
+                side_response(cfg.side_a, sample),
+                side_response(cfg.side_b, sample),
+            )
+            samples_a.append(resp_a)
+            samples_b.append(resp_b)
+
+    return samples_a, samples_b
+
+
 async def _run_case_responses(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
@@ -363,6 +422,107 @@ async def _run_case_responses(
         return case, resp_a, resp_b
 
     return await asyncio.gather(*[run_case_and_track(case) for case in cfg.cases])
+
+
+def _stability_pairs(
+    samples_a: list[str],
+    samples_b: list[str],
+) -> list[tuple[str, str]]:
+    """Score pairs for one case, in a fixed layout consumed positionally:
+
+    runs cross pairs (A_i, B_i), then C(runs, 2) self pairs within A, then
+    C(runs, 2) self pairs within B.
+    """
+    pairs = list(zip(samples_a, samples_b))
+    pairs.extend(combinations(samples_a, 2))
+    pairs.extend(combinations(samples_b, 2))
+    return pairs
+
+
+def _pairs_per_case(runs: int) -> int:
+    self_pairs = runs * (runs - 1) // 2
+    return runs + 2 * self_pairs
+
+
+async def _run_stability_diffs(
+    cfg: RunConfig,
+    on_case_completed: Callable[[TestCase], None] | None = None,
+    on_semantic_scoring_start: Callable[[], None] | None = None,
+    on_semantic_scoring_complete: Callable[[], None] | None = None,
+    check_models: bool = True,
+    cache: ResponseCache | None = None,
+) -> list[DiffResult]:
+    """Stability-mode variant of run_diffs: cfg.runs samples per case/side."""
+    if not cfg.semantic:
+        raise RuntimeError(
+            "Stability mode (runs > 1) requires semantic scoring; "
+            "remove --no-semantic."
+        )
+
+    semaphore = asyncio.Semaphore(cfg.concurrency)
+
+    async with httpx.AsyncClient() as client:
+        if check_models and not _all_responses_cached(cfg, cache):
+            await ensure_models_available(client, cfg)
+
+        async def run_case_and_track(
+            case: TestCase,
+        ) -> tuple[TestCase, list[str], list[str]]:
+            samples_a, samples_b = await run_case_samples(
+                client, semaphore, cfg, case, cache=cache
+            )
+            if on_case_completed is not None:
+                on_case_completed(case)
+            return case, samples_a, samples_b
+
+        responses = await asyncio.gather(
+            *[run_case_and_track(case) for case in cfg.cases]
+        )
+
+    if on_semantic_scoring_start is not None:
+        on_semantic_scoring_start()
+
+    pairs: list[tuple[str, str]] = []
+    for _, samples_a, samples_b in responses:
+        pairs.extend(_stability_pairs(samples_a, samples_b))
+
+    loop = asyncio.get_running_loop()
+    scores = await loop.run_in_executor(
+        None,
+        semantic_similarities,
+        pairs,
+        cfg.semantic_batch_size,
+    )
+
+    if len(scores) != len(pairs):
+        raise RuntimeError("Semantic scoring returned an unexpected number of scores.")
+
+    if on_semantic_scoring_complete is not None:
+        on_semantic_scoring_complete()
+
+    per_case = _pairs_per_case(cfg.runs)
+    self_pairs = cfg.runs * (cfg.runs - 1) // 2
+    results = []
+    for index, (case, samples_a, samples_b) in enumerate(responses):
+        base = index * per_case
+        cross = scores[base : base + cfg.runs]
+        self_a = scores[base + cfg.runs : base + cfg.runs + self_pairs]
+        self_b = scores[base + cfg.runs + self_pairs : base + per_case]
+        stats = compute_stability_stats(cross, self_a, self_b)
+
+        results.append(
+            compute_diff(
+                case_id=case.id,
+                response_a=samples_a[0],
+                response_b=samples_b[0],
+                similarity=stats.similarity_mean,
+                threshold=cfg.threshold,
+                changed_when=cfg.changed_when,
+                stability=stats,
+            )
+        )
+
+    return results
 
 
 async def run_diffs(
@@ -385,7 +545,21 @@ async def run_diffs(
        cache is provided.
     3. Optionally compute semantic similarity scores in batches.
     4. Compute line-level diffs and change status for each case.
+
+    When cfg.runs > 1 (stability mode), each case is sampled cfg.runs times
+    per side and results carry StabilityStats separating sampling noise from
+    real prompt changes; this mode requires semantic scoring.
     """
+    if cfg.runs > 1:
+        return await _run_stability_diffs(
+            cfg,
+            on_case_completed=on_case_completed,
+            on_semantic_scoring_start=on_semantic_scoring_start,
+            on_semantic_scoring_complete=on_semantic_scoring_complete,
+            check_models=check_models,
+            cache=cache,
+        )
+
     semaphore = asyncio.Semaphore(cfg.concurrency)
 
     async with httpx.AsyncClient() as client:
