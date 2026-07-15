@@ -248,7 +248,7 @@ async def test_run_diffs_checks_models_for_each_endpoint(monkeypatch):
     async def fake_check_models_available(_client, endpoint, models):
         calls.append((endpoint, tuple(models)))
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None):
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
         return "same", "same"
 
     monkeypatch.setattr(runner, "check_models_available", fake_check_models_available)
@@ -279,7 +279,7 @@ async def test_run_diffs_can_skip_model_availability_check(monkeypatch):
     async def fake_check_models_available(_client, endpoint, models):
         calls.append(endpoint)
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None):
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
         return "same", "same"
 
     monkeypatch.setattr(runner, "check_models_available", fake_check_models_available)
@@ -307,7 +307,7 @@ async def test_run_diffs_uses_batched_semantic_scoring(monkeypatch):
     async def fake_check_models_available(*_args, **_kwargs):
         return None
 
-    async def fake_run_case(_client, _semaphore, _cfg, case, cache=None):
+    async def fake_run_case(_client, _semaphore, _cfg, case, cache=None, baseline_responses=None):
         if case.id == "same":
             return "same output", "same output"
         return "left output", "right output"
@@ -349,7 +349,7 @@ async def test_run_diffs_invokes_progress_callbacks(monkeypatch):
     async def fake_check_models_available(*_args, **_kwargs):
         return None
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None):
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
         return "same output", "same output"
 
     def fake_semantic_similarities(_pairs, _batch_size):

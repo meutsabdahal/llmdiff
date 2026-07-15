@@ -22,6 +22,13 @@ from rich.progress import (
     TextColumn,
 )
 
+from llmdiff.baseline import (
+    BaselineError,
+    build_baseline_document,
+    load_baseline,
+    render_baseline,
+    validate_baseline_cases,
+)
 from llmdiff.cache import ResponseCache, default_cache_dir
 from llmdiff.config import (
     MAX_STABILITY_RUNS,
@@ -40,6 +47,7 @@ from llmdiff.runner import (
     MAX_RETRY_ATTEMPTS,
     MAX_RETRY_BACKOFF_SECONDS,
     configure_request_policy,
+    run_baseline_snapshot,
     run_diffs,
 )
 
@@ -362,9 +370,35 @@ def _iter_case_chunks(cases: list[TestCase], chunk_size: int):
 
 @app.command()
 def main(
-    prompt_a: Path = typer.Option(..., "--prompt-a", help="System prompt file A"),
-    prompt_b: Path = typer.Option(..., "--prompt-b", help="System prompt file B"),
+    prompt_a: Optional[Path] = typer.Option(
+        None,
+        "--prompt-a",
+        help="System prompt file A (omit when comparing against --baseline)",
+    ),
+    prompt_b: Optional[Path] = typer.Option(
+        None,
+        "--prompt-b",
+        help="System prompt file B (omit when snapshotting with --save-baseline)",
+    ),
     inputs: Path = typer.Option(..., "--inputs", help="Test cases JSON file"),
+    save_baseline: Optional[Path] = typer.Option(
+        None,
+        "--save-baseline",
+        help=(
+            "Snapshot mode: run --prompt-a alone over the test cases and "
+            "save prompt, model config, and responses as a baseline JSON at "
+            "this path. No comparison is performed."
+        ),
+    ),
+    baseline: Optional[Path] = typer.Option(
+        None,
+        "--baseline",
+        help=(
+            "Compare --prompt-b against a baseline saved with "
+            "--save-baseline: side A is served from the file and never "
+            "re-queried."
+        ),
+    ),
     # --- model flags ---
     model: str = typer.Option(
         "llama3.2",
@@ -557,6 +591,94 @@ def main(
     """
     _bootstrap_runtime_env()
 
+    if save_baseline is not None and baseline is not None:
+        typer.echo(
+            "Error: --save-baseline and --baseline are mutually exclusive.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if save_baseline is not None:
+        if prompt_a is None:
+            typer.echo("Error: --save-baseline requires --prompt-a.", err=True)
+            raise typer.Exit(1)
+        if prompt_b is not None:
+            typer.echo(
+                "Error: --save-baseline snapshots a single prompt; "
+                "remove --prompt-b.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if runs > 1:
+            typer.echo(
+                "Error: --save-baseline stores one response per case; "
+                "remove --runs.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if output is not None or output_format != OutputFormat.INLINE:
+            typer.echo(
+                "Error: --save-baseline writes the baseline file itself; "
+                "remove --output / --format.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if (
+            fail_on_changed
+            or fail_if_avg_below is not None
+            or fail_if_any_below_threshold is not None
+        ):
+            typer.echo(
+                "Error: failure policies do not apply to --save-baseline; "
+                "use them on the comparing run.",
+                err=True,
+            )
+            raise typer.Exit(1)
+    elif baseline is not None:
+        if prompt_b is None:
+            typer.echo(
+                "Error: --baseline requires --prompt-b (the prompt to compare "
+                "against the snapshot).",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if prompt_a is not None:
+            typer.echo(
+                "Error: --baseline replaces side A with the saved snapshot; "
+                "remove --prompt-a.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if runs > 1:
+            typer.echo(
+                "Error: --runs cannot be combined with --baseline "
+                "(a baseline stores a single response per case).",
+                err=True,
+            )
+            raise typer.Exit(1)
+        ignored_side_a_flags = [
+            flag
+            for flag, value in (
+                ("--model-a", model_a),
+                ("--base-url-a", base_url_a),
+                ("--temperature-a", temperature_a),
+                ("--max-tokens-a", max_tokens_a),
+            )
+            if value is not None
+        ]
+        if ignored_side_a_flags:
+            console.print(
+                f"[yellow]Warning:[/yellow] {', '.join(ignored_side_a_flags)} "
+                "ignored: side A comes from the baseline file."
+            )
+    elif prompt_a is None or prompt_b is None:
+        typer.echo(
+            "Error: --prompt-a and --prompt-b are required "
+            "(or use --save-baseline / --baseline for one-sided runs).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     if output is not None and output_format == OutputFormat.INLINE:
         typer.echo("Error: --output requires --format json or --format html.", err=True)
         raise typer.Exit(1)
@@ -630,10 +752,43 @@ def main(
             "(zero variance). Use a nonzero temperature for stability mode."
         )
 
+    cases = _load_cases(inputs)
+
+    if save_baseline is not None:
+        assert prompt_a is not None  # validated above
+        snapshot_side = SideConfig(
+            prompt=_load_prompt(prompt_a), model_cfg=model_cfg_a
+        )
+        asyncio.run(
+            _run_snapshot(
+                snapshot_side,
+                cases,
+                concurrency=concurrency,
+                use_cache=not no_cache,
+                output_path=save_baseline,
+            )
+        )
+        return
+
+    baseline_responses: Optional[dict[str, str]] = None
+    if baseline is not None:
+        try:
+            baseline_data = load_baseline(baseline)
+            validate_baseline_cases(baseline_data, cases)
+        except BaselineError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
+        side_a_cfg = baseline_data.side_config()
+        baseline_responses = baseline_data.responses
+    else:
+        assert prompt_a is not None  # validated above
+        side_a_cfg = SideConfig(prompt=_load_prompt(prompt_a), model_cfg=model_cfg_a)
+
+    assert prompt_b is not None  # validated above
     run_cfg = RunConfig(
-        side_a=SideConfig(prompt=_load_prompt(prompt_a), model_cfg=model_cfg_a),
+        side_a=side_a_cfg,
         side_b=SideConfig(prompt=_load_prompt(prompt_b), model_cfg=model_cfg_b),
-        cases=_load_cases(inputs),
+        cases=cases,
         concurrency=concurrency,
         runs=runs,
         semantic=not no_semantic,
@@ -653,7 +808,53 @@ def main(
             fail_if_avg_below=fail_if_avg_below,
             fail_if_any_below_threshold=fail_if_any_below_threshold,
             use_cache=not no_cache,
+            baseline_responses=baseline_responses,
         )
+    )
+
+
+async def _run_snapshot(
+    side: SideConfig,
+    cases: list[TestCase],
+    concurrency: int,
+    use_cache: bool,
+    output_path: Path,
+):
+    cache = ResponseCache() if use_cache else None
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(
+            f"Snapshotting {len(cases)} cases...", total=len(cases)
+        )
+
+        def on_case_completed(case: TestCase) -> None:
+            progress.advance(task, 1)
+            progress.update(task, description=f"Done: {case.id}")
+
+        try:
+            responses = await run_baseline_snapshot(
+                side,
+                cases,
+                concurrency=concurrency,
+                cache=cache,
+                on_case_completed=on_case_completed,
+            )
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+
+    document = build_baseline_document(side, responses)
+    _write_output_report(output_path, render_baseline(document))
+    console.print(
+        f"[dim]Baseline saved to {output_path} "
+        f"({len(cases)} cases, model {side.model_cfg.model})[/dim]"
     )
 
 
@@ -664,11 +865,16 @@ async def _run(
     fail_if_avg_below: Optional[float] = None,
     fail_if_any_below_threshold: Optional[float] = None,
     use_cache: bool = True,
+    baseline_responses: Optional[dict[str, str]] = None,
 ):
     # Build labels that are informative for both use cases:
     # - same model, different prompts: show "prompt-a / llama3.2" vs "prompt-b / llama3.2"
     # - different models, same prompt: show "prompt-a / llama3.2" vs "prompt-b / mistral"
-    label_a = f"prompt-a  [{cfg.side_a.model_cfg.model}]"
+    # With a baseline, side A is the saved snapshot rather than a live prompt.
+    if baseline_responses is not None:
+        label_a = f"baseline  [{cfg.side_a.model_cfg.model}]"
+    else:
+        label_a = f"prompt-a  [{cfg.side_a.model_cfg.model}]"
     label_b = f"prompt-b  [{cfg.side_b.model_cfg.model}]"
     semantic_chunks = (
         math.ceil(len(cfg.cases) / cfg.semantic_batch_size) if cfg.semantic else 0
@@ -716,6 +922,7 @@ async def _run(
                         # the availability preflight only needs to run once.
                         check_models=chunk_index == 0,
                         cache=cache,
+                        baseline_responses=baseline_responses,
                     )
                     results.extend(chunk_results)
             else:
@@ -723,6 +930,7 @@ async def _run(
                     cfg,
                     on_case_completed=on_case_completed,
                     cache=cache,
+                    baseline_responses=baseline_responses,
                 )
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")

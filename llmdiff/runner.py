@@ -281,10 +281,12 @@ async def check_models_available(
         )
 
 
-def _models_needed_by_endpoint(cfg: RunConfig) -> dict[str, list[str]]:
+def _models_needed_by_endpoint(
+    sides: tuple[SideConfig, ...],
+) -> dict[str, list[str]]:
     models_needed_by_endpoint: dict[str, set[str]] = {}
 
-    for side in (cfg.side_a, cfg.side_b):
+    for side in sides:
         base_url = side.model_cfg.base_url
         if base_url not in models_needed_by_endpoint:
             models_needed_by_endpoint[base_url] = set()
@@ -296,16 +298,17 @@ def _models_needed_by_endpoint(cfg: RunConfig) -> dict[str, list[str]]:
     }
 
 
-async def ensure_models_available(client: httpx.AsyncClient, cfg: RunConfig) -> None:
-    """Raises RuntimeError if any configured side model is missing."""
-    for endpoint, models_needed in _models_needed_by_endpoint(cfg).items():
+async def ensure_models_available(
+    client: httpx.AsyncClient,
+    sides: tuple[SideConfig, ...],
+) -> None:
+    """Raises RuntimeError if any given side's model is missing."""
+    for endpoint, models_needed in _models_needed_by_endpoint(sides).items():
         await check_models_available(client, endpoint, models_needed)
 
 
 def _case_messages(case: TestCase) -> list[dict[str, str]]:
-    messages = [m.model_dump() for m in (case.context or [])]
-    messages.append({"role": "user", "content": case.user})
-    return messages
+    return case.messages()
 
 
 def _side_for_sample(side: SideConfig, sample: int) -> SideConfig:
@@ -323,13 +326,17 @@ def _side_for_sample(side: SideConfig, sample: int) -> SideConfig:
     return side.model_copy(update={"model_cfg": model_cfg})
 
 
-def _all_responses_cached(cfg: RunConfig, cache: ResponseCache | None) -> bool:
+def _all_responses_cached(
+    cfg: RunConfig,
+    cache: ResponseCache | None,
+    sides: tuple[SideConfig, ...],
+) -> bool:
     if cache is None:
         return False
 
     for case in cfg.cases:
         messages = _case_messages(case)
-        for side in (cfg.side_a, cfg.side_b):
+        for side in sides:
             for sample in range(cfg.runs):
                 side_variant = _side_for_sample(side, sample)
                 if cache.get(side_variant, messages, sample=sample) is None:
@@ -344,8 +351,13 @@ async def run_case(
     cfg: RunConfig,
     case: TestCase,
     cache: ResponseCache | None = None,
+    baseline_responses: dict[str, str] | None = None,
 ) -> tuple[str, str]:
-    """Run both sides for a single test case. Returns (response_a, response_b)."""
+    """Run both sides for a single test case. Returns (response_a, response_b).
+
+    With baseline_responses, side A is the saved snapshot response and only
+    side B is queried.
+    """
     messages = _case_messages(case)
 
     async def side_response(side: SideConfig) -> str:
@@ -359,12 +371,65 @@ async def run_case(
             cache.set(side, messages, response)
         return response
 
+    if baseline_responses is not None:
+        if case.id not in baseline_responses:
+            raise RuntimeError(
+                f"Case '{case.id}' is missing from the baseline; "
+                "re-create it with --save-baseline."
+            )
+        async with semaphore:
+            resp_b = await side_response(cfg.side_b)
+        return baseline_responses[case.id], resp_b
+
     async with semaphore:
         resp_a, resp_b = await asyncio.gather(
             side_response(cfg.side_a),
             side_response(cfg.side_b),
         )
     return resp_a, resp_b
+
+
+async def run_baseline_snapshot(
+    side: SideConfig,
+    cases: list[TestCase],
+    concurrency: int = 3,
+    cache: ResponseCache | None = None,
+    check_models: bool = True,
+    on_case_completed: Callable[[TestCase], None] | None = None,
+) -> list[tuple[TestCase, str]]:
+    """Run a single side over all cases and return (case, response) pairs.
+
+    Backs --save-baseline: no diffing, no second side, just the responses
+    the baseline document stores.
+    """
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async with httpx.AsyncClient() as client:
+        if check_models:
+            all_cached = cache is not None and all(
+                cache.get(side, _case_messages(case)) is not None for case in cases
+            )
+            if not all_cached:
+                await ensure_models_available(client, (side,))
+
+        async def run_one(case: TestCase) -> tuple[TestCase, str]:
+            messages = _case_messages(case)
+            if cache is not None:
+                cached = cache.get(side, messages)
+                if cached is not None:
+                    if on_case_completed is not None:
+                        on_case_completed(case)
+                    return case, cached
+
+            async with semaphore:
+                response = await _call_ollama(client, side, messages)
+            if cache is not None:
+                cache.set(side, messages, response)
+            if on_case_completed is not None:
+                on_case_completed(case)
+            return case, response
+
+        return list(await asyncio.gather(*[run_one(case) for case in cases]))
 
 
 async def run_case_samples(
@@ -414,9 +479,17 @@ async def _run_case_responses(
     cfg: RunConfig,
     on_case_completed: Callable[[TestCase], None] | None = None,
     cache: ResponseCache | None = None,
+    baseline_responses: dict[str, str] | None = None,
 ) -> list[tuple[TestCase, str, str]]:
     async def run_case_and_track(case: TestCase) -> tuple[TestCase, str, str]:
-        resp_a, resp_b = await run_case(client, semaphore, cfg, case, cache=cache)
+        resp_a, resp_b = await run_case(
+            client,
+            semaphore,
+            cfg,
+            case,
+            cache=cache,
+            baseline_responses=baseline_responses,
+        )
         if on_case_completed is not None:
             on_case_completed(case)
         return case, resp_a, resp_b
@@ -460,10 +533,11 @@ async def _run_stability_diffs(
         )
 
     semaphore = asyncio.Semaphore(cfg.concurrency)
+    sides = (cfg.side_a, cfg.side_b)
 
     async with httpx.AsyncClient() as client:
-        if check_models and not _all_responses_cached(cfg, cache):
-            await ensure_models_available(client, cfg)
+        if check_models and not _all_responses_cached(cfg, cache, sides):
+            await ensure_models_available(client, sides)
 
         async def run_case_and_track(
             case: TestCase,
@@ -532,6 +606,7 @@ async def run_diffs(
     on_semantic_scoring_complete: Callable[[], None] | None = None,
     check_models: bool = True,
     cache: ResponseCache | None = None,
+    baseline_responses: dict[str, str] | None = None,
 ) -> list[DiffResult]:
     """
     Execute a full llmdiff run and return computed diffs.
@@ -549,8 +624,17 @@ async def run_diffs(
     When cfg.runs > 1 (stability mode), each case is sampled cfg.runs times
     per side and results carry StabilityStats separating sampling noise from
     real prompt changes; this mode requires semantic scoring.
+
+    With baseline_responses (case id -> saved response), side A is served
+    from the baseline and never queried, so only side B's model must be
+    available.
     """
     if cfg.runs > 1:
+        if baseline_responses is not None:
+            raise RuntimeError(
+                "Stability mode (runs > 1) cannot be combined with a "
+                "baseline: a baseline stores a single response per case."
+            )
         return await _run_stability_diffs(
             cfg,
             on_case_completed=on_case_completed,
@@ -561,16 +645,20 @@ async def run_diffs(
         )
 
     semaphore = asyncio.Semaphore(cfg.concurrency)
+    sides = (
+        (cfg.side_b,) if baseline_responses is not None else (cfg.side_a, cfg.side_b)
+    )
 
     async with httpx.AsyncClient() as client:
-        if check_models and not _all_responses_cached(cfg, cache):
-            await ensure_models_available(client, cfg)
+        if check_models and not _all_responses_cached(cfg, cache, sides):
+            await ensure_models_available(client, sides)
         responses = await _run_case_responses(
             client,
             semaphore,
             cfg,
             on_case_completed=on_case_completed,
             cache=cache,
+            baseline_responses=baseline_responses,
         )
 
     similarities: list[float | None]
