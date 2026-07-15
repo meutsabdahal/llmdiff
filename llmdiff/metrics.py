@@ -31,7 +31,9 @@ def _get_model():
                 except Exception:
                     raise RuntimeError(_MISSING_SEMANTIC_DEPS_MSG) from None
 
-                Console().print(
+                # stderr, not stdout: piped --format json/html output must
+                # stay parseable, and this notice would corrupt it.
+                Console(stderr=True).print(
                     "[dim]Loading embedding model (first run only)...[/dim]"
                 )
                 _model = SentenceTransformer(
