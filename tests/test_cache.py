@@ -7,6 +7,7 @@ import pytest
 import llmdiff.runner as runner_module
 from llmdiff.cache import ResponseCache, default_cache_dir
 from llmdiff.config import ChatMessage, ModelConfig, RunConfig, SideConfig, TestCase
+from llmdiff.metrics import SideTiming
 from llmdiff.runner import run_case, run_diffs
 
 
@@ -127,7 +128,11 @@ async def test_run_case_populates_and_reuses_cache(tmp_path):
     client = CountingClient()
     second = await run_case(client, semaphore, cfg, cfg.cases[0], cache=cache)
     assert client.post_calls == 0
-    assert second == first
+    # Same responses; timing is replayed from the cache and marked as such.
+    assert second[:2] == first[:2]
+    assert second[2] is not None and second[2].cached
+    assert second[3] is not None and second[3].cached
+    assert not first[2].cached and not first[3].cached
 
 
 @pytest.mark.asyncio
@@ -180,7 +185,7 @@ async def test_run_diffs_checks_models_when_cache_incomplete(tmp_path, monkeypat
         check_calls.append(endpoint)
 
     async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
-        return "answer a", "answer b"
+        return "answer a", "answer b", None, None
 
     monkeypatch.setattr(
         runner_module, "check_models_available", fake_check_models_available
@@ -190,3 +195,28 @@ async def test_run_diffs_checks_models_when_cache_incomplete(tmp_path, monkeypat
     await run_diffs(cfg, cache=cache)
 
     assert len(check_calls) == 1
+
+
+def test_cache_round_trips_timing(tmp_path):
+    cache = ResponseCache(cache_dir=tmp_path)
+    timing = SideTiming(latency_s=1.5, tokens=42, tokens_per_s=28.0)
+
+    cache.set(_side(), _MESSAGES, "resp", timing=timing)
+    hit = cache.get_with_timing(_side(), _MESSAGES)
+
+    assert hit is not None
+    response, replayed = hit
+    assert response == "resp"
+    assert replayed.latency_s == 1.5
+    assert replayed.tokens == 42
+    assert replayed.tokens_per_s == 28.0
+    assert replayed.cached is True
+
+
+def test_cache_entries_without_timing_return_none_timing(tmp_path):
+    cache = ResponseCache(cache_dir=tmp_path)
+
+    cache.set(_side(), _MESSAGES, "resp")
+    hit = cache.get_with_timing(_side(), _MESSAGES)
+
+    assert hit == ("resp", None)

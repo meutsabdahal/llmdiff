@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from itertools import combinations
 
@@ -9,7 +10,12 @@ import httpx
 from llmdiff.cache import ResponseCache
 from llmdiff.config import RunConfig, SideConfig, TestCase
 from llmdiff.differ import DiffResult, compute_diff
-from llmdiff.metrics import compute_stability_stats, semantic_similarities
+from llmdiff.metrics import (
+    SideTiming,
+    aggregate_timings,
+    compute_stability_stats,
+    semantic_similarities,
+)
 
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_RETRIES = 2
@@ -92,7 +98,7 @@ async def _call_ollama(
     request_timeout: float | None = None,
     max_retries: int | None = None,
     retry_backoff_base: float | None = None,
-) -> str:
+) -> tuple[str, SideTiming]:
     request_timeout = (
         _DEFAULT_REQUEST_TIMEOUT_SECONDS if request_timeout is None else request_timeout
     )
@@ -127,11 +133,15 @@ async def _call_ollama(
 
     for attempt in range(1, total_attempts + 1):
         try:
+            # Timed per attempt so retries report the successful request's
+            # latency, not the sum of failed attempts and backoff sleeps.
+            request_started = time.perf_counter()
             resp = await client.post(
                 f"{side.model_cfg.base_url}/api/chat",
                 json=payload,
                 timeout=request_timeout,
             )
+            latency_s = time.perf_counter() - request_started
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             detail = _response_detail(e.response)
@@ -207,7 +217,26 @@ async def _call_ollama(
         if not isinstance(content, str):
             raise RuntimeError("Ollama response field 'message.content' must be text.")
 
-        return content
+        # Throughput from Ollama's own generation counters when present;
+        # eval_duration is nanoseconds.
+        eval_count = body.get("eval_count")
+        eval_duration = body.get("eval_duration")
+        tokens = (
+            eval_count
+            if isinstance(eval_count, int) and not isinstance(eval_count, bool)
+            else None
+        )
+        tokens_per_s = None
+        if (
+            tokens is not None
+            and isinstance(eval_duration, int)
+            and eval_duration > 0
+        ):
+            tokens_per_s = tokens / (eval_duration / 1e9)
+
+        return content, SideTiming(
+            latency_s=latency_s, tokens=tokens, tokens_per_s=tokens_per_s
+        )
 
     raise RuntimeError(
         f"Ollama request failed for model '{side.model_cfg.model}' after "
@@ -352,24 +381,27 @@ async def run_case(
     case: TestCase,
     cache: ResponseCache | None = None,
     baseline_responses: dict[str, str] | None = None,
-) -> tuple[str, str]:
-    """Run both sides for a single test case. Returns (response_a, response_b).
+) -> tuple[str, str, SideTiming | None, SideTiming | None]:
+    """Run both sides for a single test case.
+
+    Returns (response_a, response_b, timing_a, timing_b). Timing is None for
+    a baseline side A and for cache entries written before timing existed.
 
     With baseline_responses, side A is the saved snapshot response and only
     side B is queried.
     """
     messages = _case_messages(case)
 
-    async def side_response(side: SideConfig) -> str:
+    async def side_response(side: SideConfig) -> tuple[str, SideTiming | None]:
         if cache is not None:
-            cached = cache.get(side, messages)
+            cached = cache.get_with_timing(side, messages)
             if cached is not None:
                 return cached
 
-        response = await _call_ollama(client, side, messages)
+        response, timing = await _call_ollama(client, side, messages)
         if cache is not None:
-            cache.set(side, messages, response)
-        return response
+            cache.set(side, messages, response, timing=timing)
+        return response, timing
 
     if baseline_responses is not None:
         if case.id not in baseline_responses:
@@ -378,15 +410,15 @@ async def run_case(
                 "re-create it with --save-baseline."
             )
         async with semaphore:
-            resp_b = await side_response(cfg.side_b)
-        return baseline_responses[case.id], resp_b
+            resp_b, timing_b = await side_response(cfg.side_b)
+        return baseline_responses[case.id], resp_b, None, timing_b
 
     async with semaphore:
-        resp_a, resp_b = await asyncio.gather(
+        (resp_a, timing_a), (resp_b, timing_b) = await asyncio.gather(
             side_response(cfg.side_a),
             side_response(cfg.side_b),
         )
-    return resp_a, resp_b
+    return resp_a, resp_b, timing_a, timing_b
 
 
 async def run_baseline_snapshot(
@@ -422,9 +454,9 @@ async def run_baseline_snapshot(
                     return case, cached
 
             async with semaphore:
-                response = await _call_ollama(client, side, messages)
+                response, timing = await _call_ollama(client, side, messages)
             if cache is not None:
-                cache.set(side, messages, response)
+                cache.set(side, messages, response, timing=timing)
             if on_case_completed is not None:
                 on_case_completed(case)
             return case, response
@@ -438,7 +470,7 @@ async def run_case_samples(
     cfg: RunConfig,
     case: TestCase,
     cache: ResponseCache | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[SideTiming | None], list[SideTiming | None]]:
     """Run both sides cfg.runs times for one case (stability mode).
 
     Samples run sequentially with the two sides in parallel, so one case
@@ -447,30 +479,36 @@ async def run_case_samples(
     """
     messages = _case_messages(case)
 
-    async def side_response(side: SideConfig, sample: int) -> str:
+    async def side_response(
+        side: SideConfig, sample: int
+    ) -> tuple[str, SideTiming | None]:
         side_variant = _side_for_sample(side, sample)
         if cache is not None:
-            cached = cache.get(side_variant, messages, sample=sample)
+            cached = cache.get_with_timing(side_variant, messages, sample=sample)
             if cached is not None:
                 return cached
 
-        response = await _call_ollama(client, side_variant, messages)
+        response, timing = await _call_ollama(client, side_variant, messages)
         if cache is not None:
-            cache.set(side_variant, messages, response, sample=sample)
-        return response
+            cache.set(side_variant, messages, response, sample=sample, timing=timing)
+        return response, timing
 
     samples_a: list[str] = []
     samples_b: list[str] = []
+    timings_a: list[SideTiming | None] = []
+    timings_b: list[SideTiming | None] = []
     async with semaphore:
         for sample in range(cfg.runs):
-            resp_a, resp_b = await asyncio.gather(
+            (resp_a, timing_a), (resp_b, timing_b) = await asyncio.gather(
                 side_response(cfg.side_a, sample),
                 side_response(cfg.side_b, sample),
             )
             samples_a.append(resp_a)
             samples_b.append(resp_b)
+            timings_a.append(timing_a)
+            timings_b.append(timing_b)
 
-    return samples_a, samples_b
+    return samples_a, samples_b, timings_a, timings_b
 
 
 async def _run_case_responses(
@@ -480,9 +518,11 @@ async def _run_case_responses(
     on_case_completed: Callable[[TestCase], None] | None = None,
     cache: ResponseCache | None = None,
     baseline_responses: dict[str, str] | None = None,
-) -> list[tuple[TestCase, str, str]]:
-    async def run_case_and_track(case: TestCase) -> tuple[TestCase, str, str]:
-        resp_a, resp_b = await run_case(
+) -> list[tuple[TestCase, str, str, SideTiming | None, SideTiming | None]]:
+    async def run_case_and_track(
+        case: TestCase,
+    ) -> tuple[TestCase, str, str, SideTiming | None, SideTiming | None]:
+        resp_a, resp_b, timing_a, timing_b = await run_case(
             client,
             semaphore,
             cfg,
@@ -492,7 +532,7 @@ async def _run_case_responses(
         )
         if on_case_completed is not None:
             on_case_completed(case)
-        return case, resp_a, resp_b
+        return case, resp_a, resp_b, timing_a, timing_b
 
     return await asyncio.gather(*[run_case_and_track(case) for case in cfg.cases])
 
@@ -541,13 +581,19 @@ async def _run_stability_diffs(
 
         async def run_case_and_track(
             case: TestCase,
-        ) -> tuple[TestCase, list[str], list[str]]:
-            samples_a, samples_b = await run_case_samples(
+        ) -> tuple[
+            TestCase,
+            list[str],
+            list[str],
+            list[SideTiming | None],
+            list[SideTiming | None],
+        ]:
+            samples_a, samples_b, timings_a, timings_b = await run_case_samples(
                 client, semaphore, cfg, case, cache=cache
             )
             if on_case_completed is not None:
                 on_case_completed(case)
-            return case, samples_a, samples_b
+            return case, samples_a, samples_b, timings_a, timings_b
 
         responses = await asyncio.gather(
             *[run_case_and_track(case) for case in cfg.cases]
@@ -557,7 +603,7 @@ async def _run_stability_diffs(
         on_semantic_scoring_start()
 
     pairs: list[tuple[str, str]] = []
-    for _, samples_a, samples_b in responses:
+    for _, samples_a, samples_b, _, _ in responses:
         pairs.extend(_stability_pairs(samples_a, samples_b))
 
     loop = asyncio.get_running_loop()
@@ -577,7 +623,9 @@ async def _run_stability_diffs(
     per_case = _pairs_per_case(cfg.runs)
     self_pairs = cfg.runs * (cfg.runs - 1) // 2
     results = []
-    for index, (case, samples_a, samples_b) in enumerate(responses):
+    for index, (case, samples_a, samples_b, timings_a, timings_b) in enumerate(
+        responses
+    ):
         base = index * per_case
         cross = scores[base : base + cfg.runs]
         self_a = scores[base + cfg.runs : base + cfg.runs + self_pairs]
@@ -593,6 +641,8 @@ async def _run_stability_diffs(
                 threshold=cfg.threshold,
                 changed_when=cfg.changed_when,
                 stability=stats,
+                timing_a=aggregate_timings(timings_a),
+                timing_b=aggregate_timings(timings_b),
             )
         )
 
@@ -666,7 +716,7 @@ async def run_diffs(
         if on_semantic_scoring_start is not None:
             on_semantic_scoring_start()
 
-        pairs = [(resp_a, resp_b) for _, resp_a, resp_b in responses]
+        pairs = [(resp_a, resp_b) for _, resp_a, resp_b, _, _ in responses]
         loop = asyncio.get_running_loop()
         scores = await loop.run_in_executor(
             None,
@@ -695,6 +745,10 @@ async def run_diffs(
             similarity=similarity,
             threshold=cfg.threshold,
             changed_when=cfg.changed_when,
+            timing_a=timing_a,
+            timing_b=timing_b,
         )
-        for (case, resp_a, resp_b), similarity in zip(responses, similarities)
+        for (case, resp_a, resp_b, timing_a, timing_b), similarity in zip(
+            responses, similarities
+        )
     ]

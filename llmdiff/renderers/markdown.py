@@ -57,6 +57,37 @@ def _summary_section(summary: Summary) -> list[str]:
     if extremes:
         lines += [" · ".join(extremes), ""]
 
+    perf = []
+    if summary.avg_latency_a is not None or summary.avg_latency_b is not None:
+        lat_a = (
+            f"{summary.avg_latency_a:.2f}s"
+            if summary.avg_latency_a is not None
+            else "n/a"
+        )
+        lat_b = (
+            f"{summary.avg_latency_b:.2f}s"
+            if summary.avg_latency_b is not None
+            else "n/a"
+        )
+        perf.append(f"Avg latency: A {lat_a} / B {lat_b}")
+    if (
+        summary.avg_tokens_per_s_a is not None
+        or summary.avg_tokens_per_s_b is not None
+    ):
+        rate_a = (
+            f"{summary.avg_tokens_per_s_a:.1f} tok/s"
+            if summary.avg_tokens_per_s_a is not None
+            else "n/a"
+        )
+        rate_b = (
+            f"{summary.avg_tokens_per_s_b:.1f} tok/s"
+            if summary.avg_tokens_per_s_b is not None
+            else "n/a"
+        )
+        perf.append(f"Avg throughput: A {rate_a} / B {rate_b}")
+    if perf:
+        lines += [" · ".join(perf), ""]
+
     return lines
 
 
@@ -78,6 +109,20 @@ def _case_section(result: DiffResult) -> list[str]:
         structure.append("code blocks changed")
     if structure:
         metrics.append("Structure: " + ", ".join(structure))
+    if result.timing_a is not None or result.timing_b is not None:
+
+        def _latency_str(timing) -> str:
+            if timing is None:
+                return "n/a"
+            text = f"{timing.latency_s:.2f}s"
+            if timing.cached:
+                text += " (cached)"
+            return text
+
+        metrics.append(
+            f"Latency: A {_latency_str(result.timing_a)}"
+            f" / B {_latency_str(result.timing_b)}"
+        )
     lines += [" · ".join(metrics), ""]
 
     st = result.stability

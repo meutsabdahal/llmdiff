@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 
 from llmdiff.config import ChangedWhen
-from llmdiff.metrics import StabilityStats
+from llmdiff.metrics import SideTiming, StabilityStats
 
 
 @dataclass
@@ -20,6 +20,8 @@ class DiffResult:
     length_b: int
     structural_changes: dict  # keys: lists, code_blocks, length_pct
     stability: StabilityStats | None = None  # set when runs > 1
+    timing_a: SideTiming | None = None  # None for baseline side A / untimed cache hits
+    timing_b: SideTiming | None = None
 
 
 _ORDERED_LIST_MARKER_RE = re.compile(r"^\d+[.)](?:\s|$)")
@@ -63,6 +65,8 @@ def compute_diff(
     threshold: float | None,
     changed_when: ChangedWhen = ChangedWhen.ANY,
     stability: StabilityStats | None = None,
+    timing_a: SideTiming | None = None,
+    timing_b: SideTiming | None = None,
 ) -> DiffResult:
     """Compute line-level diff and change status for one case.
 
@@ -112,4 +116,6 @@ def compute_diff(
         length_b=structural["word_count_b"],
         structural_changes=structural,
         stability=stability,
+        timing_a=timing_a,
+        timing_b=timing_b,
     )

@@ -52,12 +52,22 @@ def _failure_details(result: DiffResult) -> str:
     return "\n".join(lines)
 
 
+def _case_duration_s(result: DiffResult) -> float | None:
+    """Wall duration of one case: the two sides run in parallel, so the case
+    takes as long as its slower side."""
+    latencies = [
+        t.latency_s for t in (result.timing_a, result.timing_b) if t is not None
+    ]
+    return max(latencies) if latencies else None
+
+
 def render_junit(results: list[DiffResult], summary: Summary) -> str:
     """JUnit XML report: one <testcase> per case, changed cases as failures.
 
     Consumable by the test-report tabs of GitHub Actions, GitLab, Jenkins,
     CircleCI, and similar CI systems.
     """
+    durations = [d for r in results if (d := _case_duration_s(r)) is not None]
     totals = {
         "name": "llmdiff",
         "tests": str(summary.total),
@@ -65,15 +75,17 @@ def render_junit(results: list[DiffResult], summary: Summary) -> str:
         "errors": "0",
         "skipped": "0",
     }
+    if durations:
+        totals["time"] = f"{sum(durations):.3f}"
     testsuites = ET.Element("testsuites", totals)
     suite = ET.SubElement(testsuites, "testsuite", totals)
 
     for result in results:
-        case_el = ET.SubElement(
-            suite,
-            "testcase",
-            {"name": _xml_safe(result.case_id), "classname": "llmdiff"},
-        )
+        attrs = {"name": _xml_safe(result.case_id), "classname": "llmdiff"}
+        duration = _case_duration_s(result)
+        if duration is not None:
+            attrs["time"] = f"{duration:.3f}"
+        case_el = ET.SubElement(suite, "testcase", attrs)
         if result.changed:
             failure = ET.SubElement(
                 case_el,

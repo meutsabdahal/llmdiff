@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from llmdiff.config import SideConfig
+from llmdiff.metrics import SideTiming
 
 # Bump when the key layout or entry format changes so stale entries from
 # older llmdiff versions are never returned.
@@ -79,6 +80,18 @@ class ResponseCache:
         messages: list[dict[str, str]],
         sample: int = 0,
     ) -> str | None:
+        hit = self.get_with_timing(side, messages, sample)
+        return hit[0] if hit is not None else None
+
+    def get_with_timing(
+        self,
+        side: SideConfig,
+        messages: list[dict[str, str]],
+        sample: int = 0,
+    ) -> tuple[str, SideTiming | None] | None:
+        """Cache hit as (response, timing); timing is None for entries
+        written before timing was recorded. Replayed timing is marked cached.
+        """
         try:
             raw = self._entry_path(side, messages, sample).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -93,7 +106,33 @@ class ResponseCache:
             return None
 
         response = entry.get("response")
-        return response if isinstance(response, str) else None
+        if not isinstance(response, str):
+            return None
+
+        return response, self._timing_from_entry(entry)
+
+    @staticmethod
+    def _timing_from_entry(entry: dict) -> SideTiming | None:
+        timing = entry.get("timing")
+        if not isinstance(timing, dict):
+            return None
+
+        latency = timing.get("latency_s")
+        if not isinstance(latency, (int, float)) or latency < 0:
+            return None
+
+        tokens = timing.get("tokens")
+        tokens_per_s = timing.get("tokens_per_s")
+        return SideTiming(
+            latency_s=float(latency),
+            tokens=tokens if isinstance(tokens, int) else None,
+            tokens_per_s=(
+                float(tokens_per_s)
+                if isinstance(tokens_per_s, (int, float))
+                else None
+            ),
+            cached=True,
+        )
 
     def set(
         self,
@@ -101,11 +140,18 @@ class ResponseCache:
         messages: list[dict[str, str]],
         response: str,
         sample: int = 0,
+        timing: SideTiming | None = None,
     ) -> None:
-        entry = {
+        entry: dict = {
             "model": side.model_cfg.model,
             "response": response,
         }
+        if timing is not None:
+            entry["timing"] = {
+                "latency_s": timing.latency_s,
+                "tokens": timing.tokens,
+                "tokens_per_s": timing.tokens_per_s,
+            }
         path = self._entry_path(side, messages, sample)
 
         try:

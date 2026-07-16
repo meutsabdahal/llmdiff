@@ -189,6 +189,25 @@ llmdiff ... --fail-if-any-below-threshold 0.60
 `--fail-if-avg-below` and `--fail-if-any-below-threshold` require semantic scoring,
 so they cannot be used with `--no-semantic`.
 
+### Latency and throughput metrics
+
+Every run records per-side performance alongside the diff — no flags needed:
+
+- **Latency**: wall-clock time of each model request (the successful attempt;
+  retries and backoff are excluded).
+- **Throughput**: generation speed in tokens/sec, from Ollama's own
+  `eval_count` / `eval_duration` counters when the server reports them.
+
+Per-case values appear in the inline footer
+(`Latency: A 1.83s / B 0.94s · Throughput: A 23.0 tok/s / B 19.1 tok/s`),
+the JSON report (`cases[].timing`, `summary.avg_latency_s_*`), Markdown case
+sections, the HTML case headers, and JUnit `time` attributes. The run summary
+shows per-side averages.
+
+Responses replayed from the cache report the timing recorded when they were
+originally fetched, marked `(cached)` in reports and `"cached": true` in JSON.
+Cache entries written by older llmdiff versions have no timing and show `n/a`.
+
 ### Side-by-side terminal layout
 
 ```bash

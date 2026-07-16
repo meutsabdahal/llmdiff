@@ -4,7 +4,7 @@ import json
 
 from llmdiff.differ import DiffResult
 from llmdiff.metrics import Summary
-from llmdiff.renderers.json_ import stability_payload
+from llmdiff.renderers.json_ import stability_payload, timing_payload
 
 
 def _json_for_script(data: object) -> str:
@@ -36,6 +36,10 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
                 "length_a": r.length_a,
                 "length_b": r.length_b,
                 "stability": stability_payload(r.stability),
+                "timing": {
+                    "a": timing_payload(r.timing_a),
+                    "b": timing_payload(r.timing_b),
+                },
             }
             for r in results
         ],
@@ -76,6 +80,7 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
   .changed {{ background: #fee2e2; color: #b91c1c; }}
   .unchanged {{ background: #dcfce7; color: #166534; }}
   .sim {{ font-size: 12px; color: #666; margin-left: auto; }}
+  .lat {{ font-size: 12px; color: #666; margin-left: 12px; }}
   .stability {{ display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 12px; color: #666; background: #fafafa; border-bottom: 1px solid #e5e5e5; }}
   .responses {{ display: grid; grid-template-columns: 1fr 1fr; }}
   .resp {{ padding: 14px 16px; }}
@@ -132,6 +137,12 @@ cases.forEach(c => {{
     c.changed ? 'CHANGED' : 'unchanged'));
   if (c.similarity !== null) {{
     header.appendChild(el('span', 'sim', `Similarity: ${{c.similarity.toFixed(2)}}`));
+  }}
+  const timing = c.timing || {{}};
+  if (timing.a || timing.b) {{
+    const fmtLat = t => t ? `${{t.latency_s.toFixed(2)}}s${{t.cached ? ' (cached)' : ''}}` : 'n/a';
+    header.appendChild(el('span', c.similarity !== null ? 'lat' : 'sim',
+      `Latency: A ${{fmtLat(timing.a)}} · B ${{fmtLat(timing.b)}}`));
   }}
   card.appendChild(header);
 

@@ -3,7 +3,23 @@ from __future__ import annotations
 import json
 
 from llmdiff.differ import DiffResult
-from llmdiff.metrics import StabilityStats, Summary
+from llmdiff.metrics import SideTiming, StabilityStats, Summary
+
+
+def timing_payload(timing: SideTiming | None) -> dict | None:
+    """JSON-safe timing dict, shared by the JSON and HTML renderers."""
+    if timing is None:
+        return None
+    return {
+        "latency_s": round(timing.latency_s, 3),
+        "tokens": timing.tokens,
+        "tokens_per_s": (
+            round(timing.tokens_per_s, 1)
+            if timing.tokens_per_s is not None
+            else None
+        ),
+        "cached": timing.cached,
+    }
 
 
 def stability_payload(stats: StabilityStats | None) -> dict | None:
@@ -36,6 +52,26 @@ def render_json(results: list[DiffResult], summary: Summary) -> str:
                 "most_diverged": summary.most_diverged,
                 "least_changed": summary.least_changed,
                 "beyond_noise_count": summary.beyond_noise,
+                "avg_latency_s_a": (
+                    round(summary.avg_latency_a, 3)
+                    if summary.avg_latency_a is not None
+                    else None
+                ),
+                "avg_latency_s_b": (
+                    round(summary.avg_latency_b, 3)
+                    if summary.avg_latency_b is not None
+                    else None
+                ),
+                "avg_tokens_per_s_a": (
+                    round(summary.avg_tokens_per_s_a, 1)
+                    if summary.avg_tokens_per_s_a is not None
+                    else None
+                ),
+                "avg_tokens_per_s_b": (
+                    round(summary.avg_tokens_per_s_b, 1)
+                    if summary.avg_tokens_per_s_b is not None
+                    else None
+                ),
             },
             "cases": [
                 {
@@ -51,6 +87,10 @@ def render_json(results: list[DiffResult], summary: Summary) -> str:
                     "length_pct": r.structural_changes["length_pct"],
                     "diff": r.unified_diff,
                     "stability": stability_payload(r.stability),
+                    "timing": {
+                        "a": timing_payload(r.timing_a),
+                        "b": timing_payload(r.timing_b),
+                    },
                 }
                 for r in results
             ],

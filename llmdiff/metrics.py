@@ -193,6 +193,40 @@ def compute_stability_stats(
 
 
 @dataclass
+class SideTiming:
+    """Request timing for one side of a case.
+
+    latency_s is client wall-clock time for the successful request (retries
+    excluded). tokens and tokens_per_s come from Ollama's eval_count /
+    eval_duration when the response includes them. cached marks values
+    replayed from the response cache — they were measured when the response
+    was originally fetched, not during this run. In stability mode the values
+    are means over the run's samples.
+    """
+
+    latency_s: float
+    tokens: int | None = None
+    tokens_per_s: float | None = None
+    cached: bool = False
+
+
+def aggregate_timings(timings: Sequence[SideTiming | None]) -> SideTiming | None:
+    """Mean timing over stability-mode samples; None if nothing was timed."""
+    present = [t for t in timings if t is not None]
+    if not present:
+        return None
+
+    token_counts = [t.tokens for t in present if t.tokens is not None]
+    rates = [t.tokens_per_s for t in present if t.tokens_per_s is not None]
+    return SideTiming(
+        latency_s=_mean([t.latency_s for t in present]),
+        tokens=round(_mean(token_counts)) if token_counts else None,
+        tokens_per_s=_mean(rates) if rates else None,
+        cached=any(t.cached for t in present),
+    )
+
+
+@dataclass
 class Summary:
     total: int
     changed: int
@@ -201,6 +235,10 @@ class Summary:
     most_diverged: tuple[str, float] | None  # (case_id, similarity)
     least_changed: tuple[str, float] | None
     beyond_noise: int | None = None  # stability mode only
+    avg_latency_a: float | None = None  # seconds, mean over timed cases
+    avg_latency_b: float | None = None
+    avg_tokens_per_s_a: float | None = None
+    avg_tokens_per_s_b: float | None = None
 
 
 def compute_summary(results) -> Summary:
@@ -220,6 +258,23 @@ def compute_summary(results) -> Summary:
         sum(1 for s in stability if s.beyond_noise) if stability else None
     )
 
+    def _avg_latency(attr: str) -> float | None:
+        latencies = [
+            t.latency_s
+            for r in results
+            if (t := getattr(r, attr, None)) is not None
+        ]
+        return _mean(latencies) if latencies else None
+
+    def _avg_rate(attr: str) -> float | None:
+        rates = [
+            t.tokens_per_s
+            for r in results
+            if (t := getattr(r, attr, None)) is not None
+            and t.tokens_per_s is not None
+        ]
+        return _mean(rates) if rates else None
+
     return Summary(
         total=len(results),
         changed=len(changed),
@@ -228,4 +283,8 @@ def compute_summary(results) -> Summary:
         most_diverged=most_diverged,
         least_changed=least_changed,
         beyond_noise=beyond_noise,
+        avg_latency_a=_avg_latency("timing_a"),
+        avg_latency_b=_avg_latency("timing_b"),
+        avg_tokens_per_s_a=_avg_rate("timing_a"),
+        avg_tokens_per_s_b=_avg_rate("timing_b"),
     )

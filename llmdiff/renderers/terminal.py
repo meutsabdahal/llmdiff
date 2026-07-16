@@ -79,6 +79,34 @@ def _print_diff_section(result: DiffResult, max_diff_lines: int) -> None:
     console.print()
 
 
+def _latency_str(timing) -> str:
+    if timing is None:
+        return "n/a"
+    text = f"{timing.latency_s:.2f}s"
+    if timing.cached:
+        text += " (cached)"
+    return text
+
+
+def _timing_line(timing_a, timing_b) -> str | None:
+    if timing_a is None and timing_b is None:
+        return None
+
+    parts = [f"Latency: A {_latency_str(timing_a)} / B {_latency_str(timing_b)}"]
+
+    def _rate_str(timing) -> str:
+        if timing is None or timing.tokens_per_s is None:
+            return "n/a"
+        return f"{timing.tokens_per_s:.1f} tok/s"
+
+    rate_a = _rate_str(timing_a)
+    rate_b = _rate_str(timing_b)
+    if rate_a != "n/a" or rate_b != "n/a":
+        parts.append(f"Throughput: A {rate_a} / B {rate_b}")
+
+    return "  │  ".join(parts)
+
+
 def _print_case_metrics(result: DiffResult) -> None:
     # Stability metrics (only in stability mode, --runs > 1)
     st = result.stability
@@ -112,6 +140,9 @@ def _print_case_metrics(result: DiffResult) -> None:
         f"Semantic distance: {f'{1-sim:.2f}' if sim is not None else 'n/a'}  │  "
         f"Structure: {struct_str}[/dim]"
     )
+    timing_line = _timing_line(result.timing_a, result.timing_b)
+    if timing_line is not None:
+        console.print(f" [dim]{timing_line}[/dim]")
     console.print()
 
 
@@ -219,6 +250,33 @@ def render_summary(summary: Summary):
             f" Beyond noise:     [bold red]{summary.beyond_noise}[/bold red]"
             "  (changes larger than sampling variance)"
         )
+    if summary.avg_latency_a is not None or summary.avg_latency_b is not None:
+        lat_a = (
+            f"{summary.avg_latency_a:.2f}s"
+            if summary.avg_latency_a is not None
+            else "n/a"
+        )
+        lat_b = (
+            f"{summary.avg_latency_b:.2f}s"
+            if summary.avg_latency_b is not None
+            else "n/a"
+        )
+        console.print(f" Avg latency:      A {lat_a} / B {lat_b}")
+    if (
+        summary.avg_tokens_per_s_a is not None
+        or summary.avg_tokens_per_s_b is not None
+    ):
+        rate_a = (
+            f"{summary.avg_tokens_per_s_a:.1f} tok/s"
+            if summary.avg_tokens_per_s_a is not None
+            else "n/a"
+        )
+        rate_b = (
+            f"{summary.avg_tokens_per_s_b:.1f} tok/s"
+            if summary.avg_tokens_per_s_b is not None
+            else "n/a"
+        )
+        console.print(f" Avg throughput:   A {rate_a} / B {rate_b}")
 
     console.rule(style="dim")
     console.print()

@@ -131,3 +131,49 @@ def test_model_loading_notice_goes_to_stderr_not_stdout(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "Loading embedding model" not in captured.out
     assert "Loading embedding model" in captured.err
+
+
+def test_aggregate_timings_means_over_present_samples():
+    timings = [
+        metrics.SideTiming(latency_s=1.0, tokens=40, tokens_per_s=20.0),
+        metrics.SideTiming(latency_s=3.0, tokens=60, tokens_per_s=30.0, cached=True),
+        None,
+    ]
+
+    agg = metrics.aggregate_timings(timings)
+
+    assert agg.latency_s == 2.0
+    assert agg.tokens == 50
+    assert agg.tokens_per_s == 25.0
+    assert agg.cached is True  # any replayed sample marks the aggregate
+
+
+def test_aggregate_timings_returns_none_when_nothing_timed():
+    assert metrics.aggregate_timings([None, None]) is None
+
+
+def test_summary_averages_latency_and_throughput_per_side():
+    results = [
+        FakeResult("a", True, 0.4),
+        FakeResult("b", False, 0.9),
+    ]
+    results[0].timing_a = metrics.SideTiming(latency_s=1.0, tokens_per_s=10.0)
+    results[0].timing_b = metrics.SideTiming(latency_s=2.0, tokens_per_s=40.0)
+    results[1].timing_a = metrics.SideTiming(latency_s=3.0)  # no throughput data
+    results[1].timing_b = None  # e.g. served from a pre-timing cache entry
+
+    s = compute_summary(results)
+
+    assert s.avg_latency_a == 2.0
+    assert s.avg_latency_b == 2.0
+    assert s.avg_tokens_per_s_a == 10.0
+    assert s.avg_tokens_per_s_b == 40.0
+
+
+def test_summary_timing_fields_none_without_timing_data():
+    s = compute_summary([FakeResult("a", True, 0.4)])
+
+    assert s.avg_latency_a is None
+    assert s.avg_latency_b is None
+    assert s.avg_tokens_per_s_a is None
+    assert s.avg_tokens_per_s_b is None

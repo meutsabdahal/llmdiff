@@ -2,7 +2,7 @@ import json
 from xml.etree import ElementTree
 
 from llmdiff.differ import DiffResult
-from llmdiff.metrics import StabilityStats, Summary
+from llmdiff.metrics import SideTiming, StabilityStats, Summary
 from llmdiff.renderers.html import render_html
 from llmdiff.renderers.json_ import render_json
 from llmdiff.renderers.junit import render_junit
@@ -53,6 +53,10 @@ def test_render_json_schema_has_expected_fields():
         "most_diverged",
         "least_changed",
         "beyond_noise_count",
+        "avg_latency_s_a",
+        "avg_latency_s_b",
+        "avg_tokens_per_s_a",
+        "avg_tokens_per_s_b",
     }
 
     assert len(payload["cases"]) == 1
@@ -68,6 +72,7 @@ def test_render_json_schema_has_expected_fields():
         "length_pct",
         "diff",
         "stability",
+        "timing",
     }
     assert case["id"] == "case-1"
     assert case["response_a"] == "A"
@@ -259,3 +264,79 @@ def test_render_sarif_omits_locations_without_inputs_uri():
 
     entry = sarif["runs"][0]["results"][0]
     assert "locations" not in entry
+
+
+def _timed_result() -> DiffResult:
+    result = _sample_result()
+    result.timing_a = SideTiming(latency_s=1.234, tokens=40, tokens_per_s=32.4)
+    result.timing_b = SideTiming(
+        latency_s=0.876, tokens=20, tokens_per_s=22.8, cached=True
+    )
+    return result
+
+
+def test_render_json_includes_timing_per_case_and_summary_averages():
+    summary = _sample_summary()
+    summary.avg_latency_a = 1.234
+    summary.avg_latency_b = 0.876
+    summary.avg_tokens_per_s_a = 32.4
+    summary.avg_tokens_per_s_b = 22.8
+
+    payload = json.loads(render_json([_timed_result()], summary))
+
+    timing = payload["cases"][0]["timing"]
+    assert timing["a"] == {
+        "latency_s": 1.234,
+        "tokens": 40,
+        "tokens_per_s": 32.4,
+        "cached": False,
+    }
+    assert timing["b"]["cached"] is True
+    assert payload["summary"]["avg_latency_s_a"] == 1.234
+    assert payload["summary"]["avg_tokens_per_s_b"] == 22.8
+
+
+def test_render_json_timing_is_none_when_untimed():
+    payload = json.loads(render_json([_sample_result()], _sample_summary()))
+
+    assert payload["cases"][0]["timing"] == {"a": None, "b": None}
+    assert payload["summary"]["avg_latency_s_a"] is None
+
+
+def test_render_junit_sets_time_attributes_from_latency():
+    xml = render_junit([_timed_result()], _sample_summary())
+
+    root = ElementTree.fromstring(xml)
+    # Sides run in parallel, so the case takes as long as its slower side.
+    assert root.get("time") == "1.234"
+    testcase = root.find("./testsuite/testcase")
+    assert testcase.get("time") == "1.234"
+
+
+def test_render_junit_omits_time_attributes_when_untimed():
+    xml = render_junit([_sample_result()], _sample_summary())
+
+    root = ElementTree.fromstring(xml)
+    assert root.get("time") is None
+    assert root.find("./testsuite/testcase").get("time") is None
+
+
+def test_render_markdown_includes_latency_line_and_summary_averages():
+    summary = _sample_summary()
+    summary.avg_latency_a = 1.2
+    summary.avg_latency_b = 0.9
+    summary.avg_tokens_per_s_a = 32.4
+    summary.avg_tokens_per_s_b = 22.8
+
+    md = render_markdown([_timed_result()], summary)
+
+    assert "Latency: A 1.23s / B 0.88s (cached)" in md
+    assert "Avg latency: A 1.20s / B 0.90s" in md
+    assert "Avg throughput: A 32.4 tok/s / B 22.8 tok/s" in md
+
+
+def test_render_html_embeds_timing_payload():
+    html = render_html([_timed_result()], _sample_summary())
+
+    assert '"timing"' in html
+    assert '"latency_s": 1.234' in html

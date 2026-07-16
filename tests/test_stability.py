@@ -151,12 +151,14 @@ async def test_run_case_samples_returns_n_samples_per_side():
     cfg = _cfg(runs=3)
     client = RecordingClient()
 
-    samples_a, samples_b = await run_case_samples(
+    samples_a, samples_b, timings_a, timings_b = await run_case_samples(
         client, asyncio.Semaphore(1), cfg, cfg.cases[0]
     )
 
     assert len(samples_a) == 3
     assert len(samples_b) == 3
+    assert len(timings_a) == 3
+    assert len(timings_b) == 3
     assert len(client.payloads) == 6
 
 
@@ -191,7 +193,9 @@ async def test_run_case_samples_caches_each_sample_separately(tmp_path):
         client, asyncio.Semaphore(1), cfg, cfg.cases[0], cache=cache
     )
     assert client.payloads == []
-    assert second == first
+    # Same samples; timing is replayed from the cache and marked as such.
+    assert second[:2] == first[:2]
+    assert all(t is not None and t.cached for t in second[2] + second[3])
 
 
 # --- run_diffs stability path ---
@@ -214,7 +218,7 @@ async def test_run_diffs_stability_mode_end_to_end(monkeypatch):
         return [0.65, 0.65, 0.98, 0.97]
 
     async def fake_run_case_samples(_client, _semaphore, _cfg, _case, cache=None):
-        return ["a1", "a2"], ["b1", "b2"]
+        return ["a1", "a2"], ["b1", "b2"], [None, None], [None, None]
 
     monkeypatch.setattr(
         runner_module, "check_models_available", fake_check_models_available
@@ -262,7 +266,7 @@ async def test_run_diffs_stability_invokes_progress_callbacks(monkeypatch):
         return None
 
     async def fake_run_case_samples(_client, _semaphore, _cfg, _case, cache=None):
-        return ["a", "a"], ["a", "a"]
+        return ["a", "a"], ["a", "a"], [None, None], [None, None]
 
     def fake_semantic_similarities(_pairs, _batch_size):
         return [1.0, 1.0, 1.0, 1.0]
