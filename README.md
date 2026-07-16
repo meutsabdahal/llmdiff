@@ -189,6 +189,29 @@ llmdiff ... --fail-if-any-below-threshold 0.60
 `--fail-if-avg-below` and `--fail-if-any-below-threshold` require semantic scoring,
 so they cannot be used with `--no-semantic`.
 
+### Regression policy config file
+
+Thresholds and failure rules can live in project config instead of CI flags:
+put an `llmdiff.toml` next to your prompts (scaffolded by `llmdiff init`) and
+every run in that directory picks it up automatically.
+
+```toml
+[policy]
+threshold = 0.75
+changed_when = "semantic"
+fail_on_changed = true
+fail_if_avg_below = 0.80
+fail_if_any_below_threshold = 0.60
+```
+
+The keys mirror the CLI flags of the same names, and precedence is:
+CLI flag > config file > built-in default. `--no-fail-on-changed` turns a
+config-enabled failure rule back off for one run, and `--config path.toml`
+points at a file elsewhere (useful when CI runs from another directory).
+Snapshot runs (`--save-baseline`) ignore the file policy — thresholds
+describe how to judge a comparison. Unknown or invalid keys fail fast with
+an error rather than being silently ignored.
+
 ### Latency and throughput metrics
 
 Every run records per-side performance alongside the diff — no flags needed:

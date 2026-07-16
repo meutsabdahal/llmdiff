@@ -41,6 +41,11 @@ from llmdiff.config import (
     TestCase,
 )
 from llmdiff.metrics import compute_summary
+from llmdiff.policy import (
+    DEFAULT_CONFIG_FILENAME,
+    PolicyConfigError,
+    load_regression_policy,
+)
 from llmdiff.renderers.html import render_html
 from llmdiff.renderers.json_ import render_json
 from llmdiff.renderers.junit import render_junit
@@ -492,6 +497,28 @@ _SCAFFOLD_CASES = """\
 """
 
 
+_SCAFFOLD_POLICY = """\
+# llmdiff regression policy. Values here apply to every run in this project;
+# CLI flags override them. Uncomment what you need.
+
+[policy]
+# Mark a case changed when similarity drops below this value (0.0-1.0).
+# threshold = 0.75
+
+# What marks a case changed: "any", "lines", or "semantic".
+# changed_when = "semantic"
+
+# Exit 1 when at least one case is marked changed.
+# fail_on_changed = true
+
+# Exit 1 when run-level average similarity is below this value.
+# fail_if_avg_below = 0.80
+
+# Exit 1 when any single case falls below this similarity.
+# fail_if_any_below_threshold = 0.60
+"""
+
+
 @app.command()
 def init(
     directory: Path = typer.Argument(
@@ -514,6 +541,7 @@ def init(
         (prompt_a_path, _SCAFFOLD_PROMPT_A),
         (prompt_b_path, _SCAFFOLD_PROMPT_B),
         (cases_path, _SCAFFOLD_CASES),
+        (directory / DEFAULT_CONFIG_FILENAME, _SCAFFOLD_POLICY),
     ]
 
     created = 0
@@ -702,20 +730,32 @@ def main(
         max=1.0,
         help="Mark results as changed when similarity is below this value (0.0-1.0)",
     ),
-    changed_when: ChangedWhen = typer.Option(
-        ChangedWhen.ANY,
+    config: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        help=(
+            "Regression policy config file (TOML). Defaults to "
+            f"{DEFAULT_CONFIG_FILENAME} in the working directory when present. "
+            "CLI flags override config values."
+        ),
+    ),
+    changed_when: Optional[ChangedWhen] = typer.Option(
+        None,
         "--changed-when",
         case_sensitive=False,
         help=(
             "What marks a case changed: any (line diff or similarity below "
             "--threshold), lines (line diff only), semantic (similarity below "
-            "--threshold only)."
+            "--threshold only). Default: any."
         ),
     ),
-    fail_on_changed: bool = typer.Option(
-        False,
-        "--fail-on-changed",
-        help="Exit with code 1 when at least one case is marked changed.",
+    fail_on_changed: Optional[bool] = typer.Option(
+        None,
+        "--fail-on-changed/--no-fail-on-changed",
+        help=(
+            "Exit with code 1 when at least one case is marked changed. "
+            "--no-fail-on-changed overrides a config-file policy."
+        ),
     ),
     fail_if_avg_below: Optional[float] = typer.Option(
         None,
@@ -802,6 +842,17 @@ def main(
 
     _bootstrap_runtime_env()
 
+    try:
+        policy = load_regression_policy(config)
+    except PolicyConfigError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    if policy.source is not None:
+        # stderr keeps piped --format json/junit/sarif output parseable.
+        Console(stderr=True).print(
+            f"[dim]Regression policy loaded from {policy.source}[/dim]"
+        )
+
     if save_baseline is not None and baseline is not None:
         typer.echo(
             "Error: --save-baseline and --baseline are mutually exclusive.",
@@ -835,7 +886,7 @@ def main(
             )
             raise typer.Exit(1)
         if (
-            fail_on_changed
+            fail_on_changed is not None
             or fail_if_avg_below is not None
             or fail_if_any_below_threshold is not None
         ):
@@ -890,6 +941,25 @@ def main(
         )
         raise typer.Exit(1)
 
+    # CLI flags win; unset values fall back to the config-file policy.
+    # Snapshot runs skip the file policy entirely: thresholds and failure
+    # rules describe how to judge a comparison, which a snapshot never does.
+    if save_baseline is None:
+        if fail_on_changed is None:
+            fail_on_changed = policy.fail_on_changed
+        if fail_if_avg_below is None:
+            fail_if_avg_below = policy.fail_if_avg_below
+        if fail_if_any_below_threshold is None:
+            fail_if_any_below_threshold = policy.fail_if_any_below_threshold
+        if threshold is None:
+            threshold = policy.threshold
+        if changed_when is None:
+            changed_when = policy.changed_when
+    resolved_fail_on_changed = bool(fail_on_changed)
+    resolved_changed_when = (
+        changed_when if changed_when is not None else ChangedWhen.ANY
+    )
+
     if output is not None and output_format == OutputFormat.INLINE:
         typer.echo(
             "Error: --output requires a non-inline --format "
@@ -916,7 +986,9 @@ def main(
         )
         raise typer.Exit(1)
 
-    if changed_when == ChangedWhen.SEMANTIC and (no_semantic or threshold is None):
+    if resolved_changed_when == ChangedWhen.SEMANTIC and (
+        no_semantic or threshold is None
+    ):
         typer.echo(
             "Error: --changed-when semantic requires --threshold and semantic "
             "scoring (remove --no-semantic).",
@@ -1026,13 +1098,13 @@ def main(
         max_diff_lines=max_diff_lines,
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
-        changed_when=changed_when,
+        changed_when=resolved_changed_when,
     )
     asyncio.run(
         _run(
             run_cfg,
             output_path=output,
-            fail_on_changed=fail_on_changed,
+            fail_on_changed=resolved_fail_on_changed,
             fail_if_avg_below=fail_if_avg_below,
             fail_if_any_below_threshold=fail_if_any_below_threshold,
             use_cache=not no_cache,

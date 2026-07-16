@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 import llmdiff.cli as cli
 from llmdiff.config import (
+    ChangedWhen,
     ModelConfig,
     OutputFormat,
     RunConfig,
@@ -76,6 +77,12 @@ def test_init_scaffolds_example_files(tmp_path):
     ]
     # The scaffold demonstrates tagging for selective execution.
     assert cases[0].tags == ["smoke"]
+    # The policy scaffold is all comments: it must parse as an empty policy.
+    from llmdiff.policy import load_regression_policy
+
+    policy = load_regression_policy(tmp_path / "llmdiff.toml")
+    assert policy.threshold is None
+    assert policy.fail_on_changed is None
     assert "llmdiff --prompt-a" in result.output
 
 
@@ -755,6 +762,143 @@ def test_cli_unknown_tag_warns_but_runs(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "tag(s) not present in any case: typo" in result.output
     assert [c.id for c in captured["cfg"].cases] == ["greet"]
+
+
+def _policy_project(tmp_path, policy_toml):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+    (tmp_path / "llmdiff.toml").write_text(policy_toml, encoding="utf-8")
+    return [
+        "--prompt-a",
+        str(prompt_a),
+        "--prompt-b",
+        str(prompt_b),
+        "--inputs",
+        str(inputs),
+        "--no-semantic",
+    ]
+
+
+def test_cli_config_policy_fail_on_changed_applies(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nfail_on_changed = true\n")
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 1
+    assert "Regression policy loaded from llmdiff.toml" in result.output
+    assert "--fail-on-changed triggered" in result.output
+
+
+def test_cli_no_fail_on_changed_overrides_config(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nfail_on_changed = true\n")
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, [*args, "--no-fail-on-changed"])
+
+    assert result.exit_code == 0
+
+
+def test_cli_config_threshold_and_changed_when_feed_run_config(
+    tmp_path, monkeypatch
+):
+    args = _policy_project(
+        tmp_path, '[policy]\nthreshold = 0.75\nchanged_when = "lines"\n'
+    )
+    captured = {}
+
+    async def fake_run(cfg, **kwargs):
+        captured["cfg"] = cfg
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.threshold == 0.75
+    assert cfg.changed_when == ChangedWhen.LINES
+    assert cfg.filter_changed is True  # threshold implies filtering
+
+
+def test_cli_threshold_flag_overrides_config(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nthreshold = 0.75\n")
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, [*args, "--threshold", "0.5"])
+
+    assert result.exit_code == 0
+    assert captured["cfg"].threshold == 0.5
+
+
+def test_cli_explicit_config_path_missing_errors(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, [*args, "--config", "nope.toml"])
+
+    assert result.exit_code == 1
+    assert "config file not found" in result.output
+
+
+def test_cli_invalid_config_policy_errors(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nfail_on_change = true\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 1
+    assert "unknown key(s) in [policy]" in result.output
+
+
+def test_cli_save_baseline_ignores_config_policy(tmp_path, monkeypatch):
+    _policy_project(tmp_path, "[policy]\nfail_on_changed = true\n")
+
+    captured = {}
+
+    async def fake_run_snapshot(side, cases, **kwargs):
+        captured["side"] = side
+
+    monkeypatch.setattr(cli, "_run_snapshot", fake_run_snapshot)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "prompt-a.txt",
+            "--inputs",
+            "cases.json",
+            "--no-semantic",
+            "--save-baseline",
+            "baseline.json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "side" in captured
 
 
 def test_cli_junit_output_writes_parseable_xml(tmp_path, monkeypatch):
