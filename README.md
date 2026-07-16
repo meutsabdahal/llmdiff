@@ -207,9 +207,35 @@ llmdiff ... --format inline        # default terminal output
 llmdiff ... --format json          # machine-readable, for scripting
 llmdiff ... --format html          # standalone HTML report
 llmdiff ... --format markdown      # GitHub-flavored Markdown (job summaries, PR comments)
+llmdiff ... --format junit         # JUnit XML (CI test-report tabs)
+llmdiff ... --format sarif         # SARIF 2.1.0 (GitHub code scanning)
 llmdiff ... --format json --output report.json   # save JSON report
 llmdiff ... --format html --output report.html   # save HTML report
 llmdiff ... --format markdown --output report.md # save Markdown report
+```
+
+### CI export targets (JUnit and SARIF)
+
+```bash
+# JUnit XML: each case is a test; changed cases are failures.
+# Consumed by the test-report tabs of GitHub Actions, GitLab, Jenkins, CircleCI, ...
+llmdiff ... --format junit --output llmdiff-junit.xml
+
+# SARIF 2.1.0: each changed case is a warning pointing at its definition in
+# cases.json. Upload to GitHub code scanning to get alerts and PR annotations.
+llmdiff ... --format sarif --output llmdiff.sarif
+```
+
+```yaml
+# GitHub Actions: surface changed cases as code scanning alerts
+- name: Compare prompts
+  run: |
+    llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt \
+      --inputs tests/cases.json --model llama3.2 --format sarif --output llmdiff.sarif
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: llmdiff.sarif
 ```
 
 ### Skip semantic scoring (faster)

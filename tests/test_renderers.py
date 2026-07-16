@@ -1,10 +1,13 @@
 import json
+from xml.etree import ElementTree
 
 from llmdiff.differ import DiffResult
 from llmdiff.metrics import StabilityStats, Summary
 from llmdiff.renderers.html import render_html
 from llmdiff.renderers.json_ import render_json
+from llmdiff.renderers.junit import render_junit
 from llmdiff.renderers.markdown import render_markdown
+from llmdiff.renderers.sarif import render_sarif
 
 
 def _sample_result() -> DiffResult:
@@ -158,3 +161,101 @@ def test_render_html_escapes_script_sensitive_characters_in_embedded_json():
     assert "\\u003c/script\\u003e" in html
     assert "\\u003cimg src=x onerror=1\\u003e" in html
     assert html.count("</script>") == 1
+
+
+def _unchanged_result() -> DiffResult:
+    return DiffResult(
+        case_id="case-same",
+        response_a="A",
+        response_b="A",
+        unified_diff=[],
+        changed=False,
+        similarity=0.99,
+        length_a=1,
+        length_b=1,
+        structural_changes={
+            "lists_changed": False,
+            "code_blocks_changed": False,
+            "length_pct": 0.0,
+            "word_count_a": 1,
+            "word_count_b": 1,
+        },
+    )
+
+
+def _two_case_summary() -> Summary:
+    return Summary(
+        total=2,
+        changed=1,
+        unchanged=1,
+        avg_similarity=0.7,
+        most_diverged=("case-1", 0.42),
+        least_changed=("case-same", 0.99),
+    )
+
+
+def test_render_junit_marks_changed_cases_as_failures():
+    xml = render_junit([_sample_result(), _unchanged_result()], _two_case_summary())
+
+    root = ElementTree.fromstring(xml)
+    assert root.tag == "testsuites"
+    assert root.get("tests") == "2"
+    assert root.get("failures") == "1"
+
+    testcases = root.findall("./testsuite/testcase")
+    assert [tc.get("name") for tc in testcases] == ["case-1", "case-same"]
+
+    failures = testcases[0].findall("failure")
+    assert len(failures) == 1
+    assert "similarity 0.4200" in failures[0].get("message")
+    assert "-A" in failures[0].text and "+B" in failures[0].text
+
+    assert testcases[1].findall("failure") == []
+
+
+def test_render_junit_strips_xml_illegal_control_characters():
+    result = _sample_result()
+    result.response_a = "bad\x08byte"
+    result.unified_diff = ["-bad\x08byte", "+ok"]
+
+    xml = render_junit([result], _sample_summary())
+
+    root = ElementTree.fromstring(xml)  # raises if the XML is invalid
+    failure = root.find("./testsuite/testcase/failure")
+    assert "\x08" not in failure.text
+    assert "-badbyte" in failure.text
+
+
+def test_render_sarif_reports_only_changed_cases_with_locations():
+    sarif = json.loads(
+        render_sarif(
+            [_sample_result(), _unchanged_result()],
+            _two_case_summary(),
+            inputs_uri="tests/cases.json",
+            case_lines={"case-1": 12},
+        )
+    )
+
+    assert sarif["version"] == "2.1.0"
+    run = sarif["runs"][0]
+    assert run["tool"]["driver"]["name"] == "llmdiff"
+    assert run["tool"]["driver"]["rules"][0]["id"] == "prompt-behavior-changed"
+
+    results = run["results"]
+    assert len(results) == 1
+    entry = results[0]
+    assert entry["ruleId"] == "prompt-behavior-changed"
+    assert entry["level"] == "warning"
+    assert "case-1" in entry["message"]["text"]
+    assert entry["partialFingerprints"] == {"llmdiffCaseId": "case-1"}
+
+    location = entry["locations"][0]["physicalLocation"]
+    assert location["artifactLocation"]["uri"] == "tests/cases.json"
+    assert location["region"]["startLine"] == 12
+
+
+def test_render_sarif_omits_locations_without_inputs_uri():
+    sarif = json.loads(render_sarif([_sample_result()], _sample_summary()))
+
+    entry = sarif["runs"][0]["results"][0]
+    assert "locations" not in entry

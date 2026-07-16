@@ -15,6 +15,8 @@ class OutputFormat(str, Enum):
     JSON = "json"
     HTML = "html"
     MARKDOWN = "markdown"
+    JUNIT = "junit"
+    SARIF = "sarif"
 
 
 class ChangedWhen(str, Enum):

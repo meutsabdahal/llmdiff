@@ -1,5 +1,6 @@
 import json
 import os
+from xml.etree import ElementTree
 
 import pytest
 import typer
@@ -126,7 +127,7 @@ def test_cli_rejects_output_for_inline_format():
     )
 
     assert result.exit_code == 1
-    assert "--output requires --format json, html, or markdown." in result.output
+    assert "--output requires a non-inline --format" in result.output
 
 
 def test_cli_changed_when_semantic_requires_threshold():
@@ -754,6 +755,89 @@ def test_cli_unknown_tag_warns_but_runs(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "tag(s) not present in any case: typo" in result.output
     assert [c.id for c in captured["cfg"].cases] == ["greet"]
+
+
+def test_cli_junit_output_writes_parseable_xml(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(
+        json.dumps([{"id": "case-1", "user": "x"}, {"id": "case-2", "user": "y"}])
+    )
+    report = tmp_path / "report.xml"
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True), _mk_diff("case-2", changed=False)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            "--format",
+            "junit",
+            "--output",
+            str(report),
+        ],
+    )
+
+    assert result.exit_code == 0
+    root = ElementTree.fromstring(report.read_text(encoding="utf-8"))
+    assert root.get("tests") == "2"
+    assert root.get("failures") == "1"
+    assert root.find("./testsuite/testcase[@name='case-1']/failure") is not None
+    assert root.find("./testsuite/testcase[@name='case-2']/failure") is None
+
+
+def test_cli_sarif_output_points_at_inputs_file(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}], indent=2))
+    report = tmp_path / "report.sarif"
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "prompt-a.txt",
+            "--prompt-b",
+            "prompt-b.txt",
+            "--inputs",
+            "cases.json",
+            "--no-semantic",
+            "--format",
+            "sarif",
+            "--output",
+            "report.sarif",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sarif = json.loads(report.read_text(encoding="utf-8"))
+    entry = sarif["runs"][0]["results"][0]
+    assert "case-1" in entry["message"]["text"]
+    location = entry["locations"][0]["physicalLocation"]
+    assert location["artifactLocation"]["uri"] == "cases.json"
+    # indent=2 puts the "id" key of the first case on line 3.
+    assert location["region"]["startLine"] == 3
 
 
 def test_cli_side_by_side_flag_sets_run_config(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+from functools import partial
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 from pathlib import Path
@@ -42,7 +43,9 @@ from llmdiff.config import (
 from llmdiff.metrics import compute_summary
 from llmdiff.renderers.html import render_html
 from llmdiff.renderers.json_ import render_json
+from llmdiff.renderers.junit import render_junit
 from llmdiff.renderers.markdown import render_markdown
+from llmdiff.renderers.sarif import render_sarif
 from llmdiff.renderers.terminal import (
     render_case_inline,
     render_case_side_by_side,
@@ -387,6 +390,43 @@ def _collect_policy_failures(
     return failures
 
 
+# Matches a pretty-printed `"id": "..."` key line in cases.json; anchored to
+# the line start so id-like text inside user strings is not mistaken for a
+# case definition. Minified files simply fall back to line 1.
+_CASE_ID_LINE_RE = re.compile(r'^\s*"id"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _sarif_location_context(
+    inputs_path: Optional[Path],
+) -> tuple[Optional[str], dict[str, int]]:
+    """Best-effort artifact URI and per-case line numbers for SARIF results."""
+    if inputs_path is None:
+        return None, {}
+
+    try:
+        uri = inputs_path.resolve().relative_to(Path.cwd()).as_posix()
+    except (OSError, ValueError):
+        uri = inputs_path.as_posix()
+
+    case_lines: dict[str, int] = {}
+    try:
+        text = inputs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return uri, case_lines
+
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        match = _CASE_ID_LINE_RE.match(line)
+        if match is None:
+            continue
+        try:
+            case_id = json.loads(f'"{match.group(1)}"')
+        except json.JSONDecodeError:
+            continue
+        case_lines.setdefault(case_id, line_no)
+
+    return uri, case_lines
+
+
 def _write_output_report(output_path: Path, content: str) -> None:
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -728,7 +768,7 @@ def main(
         OutputFormat.INLINE,
         "--format",
         case_sensitive=False,
-        help="Output format: inline, json, html, or markdown",
+        help="Output format: inline, json, html, markdown, junit, or sarif",
     ),
     output: Optional[Path] = typer.Option(None, "--output"),
     version: bool = typer.Option(
@@ -852,7 +892,9 @@ def main(
 
     if output is not None and output_format == OutputFormat.INLINE:
         typer.echo(
-            "Error: --output requires --format json, html, or markdown.", err=True
+            "Error: --output requires a non-inline --format "
+            "(json, html, markdown, junit, or sarif).",
+            err=True,
         )
         raise typer.Exit(1)
 
@@ -995,6 +1037,7 @@ def main(
             fail_if_any_below_threshold=fail_if_any_below_threshold,
             use_cache=not no_cache,
             baseline_responses=baseline_responses,
+            inputs_path=inputs,
         )
     )
 
@@ -1052,6 +1095,7 @@ async def _run(
     fail_if_any_below_threshold: Optional[float] = None,
     use_cache: bool = True,
     baseline_responses: Optional[dict[str, str]] = None,
+    inputs_path: Optional[Path] = None,
 ):
     # Build labels that are informative for both use cases:
     # - same model, different prompts: show "prompt-a / llama3.2" vs "prompt-b / llama3.2"
@@ -1136,8 +1180,14 @@ async def _run(
         OutputFormat.JSON: render_json,
         OutputFormat.HTML: render_html,
         OutputFormat.MARKDOWN: render_markdown,
+        OutputFormat.JUNIT: render_junit,
     }
     renderer = report_renderers.get(cfg.output_format)
+    if cfg.output_format == OutputFormat.SARIF:
+        inputs_uri, case_lines = _sarif_location_context(inputs_path)
+        renderer = partial(
+            render_sarif, inputs_uri=inputs_uri, case_lines=case_lines
+        )
     if renderer is not None:
         out = renderer(results, summary)
         if output_path:
