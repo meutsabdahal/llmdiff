@@ -47,6 +47,67 @@ def test_cli_version_flag_prints_version_and_exits():
     assert result.output.startswith("llmdiff ")
 
 
+def test_cli_missing_inputs_suggests_init():
+    result = runner.invoke(cli.app, ["--prompt-a", "a.txt", "--prompt-b", "b.txt"])
+
+    assert result.exit_code == 2
+    assert "missing required option: --inputs" in result.output
+    assert "llmdiff init" in result.output
+
+
+def test_init_scaffolds_example_files(tmp_path):
+    result = runner.invoke(cli.app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 0
+    prompt_a = tmp_path / "prompts" / "v1.txt"
+    prompt_b = tmp_path / "prompts" / "v2.txt"
+    cases_path = tmp_path / "cases.json"
+    assert prompt_a.is_file()
+    assert prompt_b.is_file()
+    assert cases_path.is_file()
+    # The scaffold must pass the same validation the compare command applies.
+    assert cli._load_prompt(prompt_a) != cli._load_prompt(prompt_b)
+    cases = cli._load_cases(cases_path)
+    assert [case.id for case in cases] == [
+        "basic-greeting",
+        "refusal-boundary",
+        "multi-turn",
+    ]
+    assert "llmdiff --prompt-a" in result.output
+
+
+def test_init_skips_existing_files_without_force(tmp_path):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text("[]", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    assert cases_path.read_text(encoding="utf-8") == "[]"
+    assert (tmp_path / "prompts" / "v1.txt").is_file()
+
+
+def test_init_force_overwrites_existing_files(tmp_path):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text("[]", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["init", str(tmp_path), "--force"])
+
+    assert result.exit_code == 0
+    assert len(cli._load_cases(cases_path)) == 3
+
+
+def test_init_rejects_non_directory_target(tmp_path):
+    target = tmp_path / "cases.json"
+    target.write_text("[]", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["init", str(target)])
+
+    assert result.exit_code == 1
+    assert "not a directory" in result.output
+
+
 def test_cli_rejects_output_for_inline_format():
     result = runner.invoke(
         cli.app,

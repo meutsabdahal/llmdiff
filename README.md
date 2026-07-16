@@ -71,6 +71,18 @@ llmdiff ... --no-semantic
 
 ## Quick start
 
+Want a working example immediately? Scaffold one:
+
+```bash
+llmdiff init
+```
+
+This generates `prompts/v1.txt`, `prompts/v2.txt`, and a starter `cases.json`
+in the current directory (pass a path to scaffold elsewhere, `--force` to
+overwrite). Then follow the printed command to run your first diff.
+
+Setting up by hand instead:
+
 **1. Write your test cases**
 
 ```json
