@@ -4,6 +4,7 @@ import json
 
 from llmdiff.differ import DiffResult
 from llmdiff.metrics import Summary
+from llmdiff.renderers.json_ import stability_payload, timing_payload
 
 
 def _json_for_script(data: object) -> str:
@@ -34,6 +35,11 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
                 "length_pct": r.structural_changes["length_pct"],
                 "length_a": r.length_a,
                 "length_b": r.length_b,
+                "stability": stability_payload(r.stability),
+                "timing": {
+                    "a": timing_payload(r.timing_a),
+                    "b": timing_payload(r.timing_b),
+                },
             }
             for r in results
         ],
@@ -74,6 +80,8 @@ def render_html(results: list[DiffResult], summary: Summary) -> str:
   .changed {{ background: #fee2e2; color: #b91c1c; }}
   .unchanged {{ background: #dcfce7; color: #166534; }}
   .sim {{ font-size: 12px; color: #666; margin-left: auto; }}
+  .lat {{ font-size: 12px; color: #666; margin-left: 12px; }}
+  .stability {{ display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 12px; color: #666; background: #fafafa; border-bottom: 1px solid #e5e5e5; }}
   .responses {{ display: grid; grid-template-columns: 1fr 1fr; }}
   .resp {{ padding: 14px 16px; }}
   .resp:first-child {{ border-right: 1px solid #e5e5e5; }}
@@ -130,7 +138,25 @@ cases.forEach(c => {{
   if (c.similarity !== null) {{
     header.appendChild(el('span', 'sim', `Similarity: ${{c.similarity.toFixed(2)}}`));
   }}
+  const timing = c.timing || {{}};
+  if (timing.a || timing.b) {{
+    const fmtLat = t => t ? `${{t.latency_s.toFixed(2)}}s${{t.cached ? ' (cached)' : ''}}` : 'n/a';
+    header.appendChild(el('span', c.similarity !== null ? 'lat' : 'sim',
+      `Latency: A ${{fmtLat(timing.a)}} · B ${{fmtLat(timing.b)}}`));
+  }}
   card.appendChild(header);
+
+  if (c.stability) {{
+    const st = c.stability;
+    const line = el('div', 'stability',
+      `Stability (${{st.runs}} runs): ${{st.similarity_mean.toFixed(2)}} ± ${{st.similarity_std.toFixed(2)}}` +
+      ` · 95% CI ${{st.ci95[0].toFixed(2)}}–${{st.ci95[1].toFixed(2)}}` +
+      ` · self-similarity A ${{st.self_similarity_a.toFixed(2)}} / B ${{st.self_similarity_b.toFixed(2)}}`);
+    const verdict = el('span', 'badge ' + (st.beyond_noise ? 'changed' : 'unchanged'),
+      st.beyond_noise ? 'beyond noise' : 'within noise');
+    line.appendChild(verdict);
+    card.appendChild(line);
+  }}
 
   const resps = el('div', 'responses');
   ['a', 'b'].forEach(side => {{

@@ -1,5 +1,6 @@
 import json
 import os
+from xml.etree import ElementTree
 
 import pytest
 import typer
@@ -7,6 +8,8 @@ from typer.testing import CliRunner
 
 import llmdiff.cli as cli
 from llmdiff.config import (
+    ChangedWhen,
+    DiffMode,
     ModelConfig,
     OutputFormat,
     RunConfig,
@@ -47,6 +50,75 @@ def test_cli_version_flag_prints_version_and_exits():
     assert result.output.startswith("llmdiff ")
 
 
+def test_cli_missing_inputs_suggests_init():
+    result = runner.invoke(cli.app, ["--prompt-a", "a.txt", "--prompt-b", "b.txt"])
+
+    assert result.exit_code == 2
+    assert "missing required option: --inputs" in result.output
+    assert "llmdiff init" in result.output
+
+
+def test_init_scaffolds_example_files(tmp_path):
+    result = runner.invoke(cli.app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 0
+    prompt_a = tmp_path / "prompts" / "v1.txt"
+    prompt_b = tmp_path / "prompts" / "v2.txt"
+    cases_path = tmp_path / "cases.json"
+    assert prompt_a.is_file()
+    assert prompt_b.is_file()
+    assert cases_path.is_file()
+    # The scaffold must pass the same validation the compare command applies.
+    assert cli._load_prompt(prompt_a) != cli._load_prompt(prompt_b)
+    cases = cli._load_cases(cases_path)
+    assert [case.id for case in cases] == [
+        "basic-greeting",
+        "refusal-boundary",
+        "multi-turn",
+    ]
+    # The scaffold demonstrates tagging for selective execution.
+    assert cases[0].tags == ["smoke"]
+    # The policy scaffold is all comments: it must parse as an empty policy.
+    from llmdiff.policy import load_regression_policy
+
+    policy = load_regression_policy(tmp_path / "llmdiff.toml")
+    assert policy.threshold is None
+    assert policy.fail_on_changed is None
+    assert "llmdiff --prompt-a" in result.output
+
+
+def test_init_skips_existing_files_without_force(tmp_path):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text("[]", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    assert cases_path.read_text(encoding="utf-8") == "[]"
+    assert (tmp_path / "prompts" / "v1.txt").is_file()
+
+
+def test_init_force_overwrites_existing_files(tmp_path):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text("[]", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["init", str(tmp_path), "--force"])
+
+    assert result.exit_code == 0
+    assert len(cli._load_cases(cases_path)) == 3
+
+
+def test_init_rejects_non_directory_target(tmp_path):
+    target = tmp_path / "cases.json"
+    target.write_text("[]", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["init", str(target)])
+
+    assert result.exit_code == 1
+    assert "not a directory" in result.output
+
+
 def test_cli_rejects_output_for_inline_format():
     result = runner.invoke(
         cli.app,
@@ -63,7 +135,7 @@ def test_cli_rejects_output_for_inline_format():
     )
 
     assert result.exit_code == 1
-    assert "--output requires --format json or --format html." in result.output
+    assert "--output requires a non-inline --format" in result.output
 
 
 def test_cli_changed_when_semantic_requires_threshold():
@@ -208,6 +280,299 @@ def test_cli_supports_asymmetric_base_urls(tmp_path, monkeypatch):
     assert cfg.side_b.model_cfg.base_url == "http://side-b:11434"
 
 
+@pytest.mark.parametrize(
+    ("extra_args", "expected_use_cache"),
+    [([], True), (["--no-cache"], False)],
+)
+def test_cli_no_cache_flag_controls_caching(
+    tmp_path, monkeypatch, extra_args, expected_use_cache
+):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **kwargs):
+        captured["use_cache"] = kwargs["use_cache"]
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            *extra_args,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["use_cache"] is expected_use_cache
+
+
+def _write_inputs_and_prompt(tmp_path):
+    prompt = tmp_path / "prompt.txt"
+    inputs = tmp_path / "cases.json"
+    prompt.write_text("a prompt")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+    return prompt, inputs
+
+
+def test_cli_requires_prompts_without_baseline_flags(tmp_path):
+    _, inputs = _write_inputs_and_prompt(tmp_path)
+
+    result = runner.invoke(cli.app, ["--inputs", str(inputs)])
+
+    assert result.exit_code == 1
+    assert "--prompt-a and --prompt-b are required" in result.output
+
+
+def test_cli_save_baseline_runs_snapshot(tmp_path, monkeypatch):
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    captured = {}
+
+    async def fake_run_snapshot(side, cases, **kwargs):
+        captured["side"] = side
+        captured["cases"] = cases
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(cli, "_run_snapshot", fake_run_snapshot)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--save-baseline",
+            str(tmp_path / "baseline.json"),
+            "--model",
+            "mistral",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["side"].prompt == "a prompt"
+    assert captured["side"].model_cfg.model == "mistral"
+    assert [c.id for c in captured["cases"]] == ["case-1"]
+    assert captured["kwargs"]["output_path"] == tmp_path / "baseline.json"
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_error"),
+    [
+        (["--prompt-b", "b.txt"], "remove --prompt-b"),
+        (["--runs", "3"], "remove --runs"),
+        (["--format", "json"], "remove --output / --format"),
+        (["--fail-on-changed"], "failure policies do not apply"),
+    ],
+)
+def test_cli_save_baseline_rejects_incompatible_flags(
+    tmp_path, extra_args, expected_error
+):
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--save-baseline",
+            str(tmp_path / "baseline.json"),
+            *extra_args,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert expected_error in result.output
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_error"),
+    [
+        (["--prompt-a", "a.txt"], "remove --prompt-a"),
+        (["--runs", "3"], "cannot be combined with --baseline"),
+        ([], "--baseline requires --prompt-b"),
+    ],
+)
+def test_cli_baseline_rejects_incompatible_flags(tmp_path, extra_args, expected_error):
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    args = ["--inputs", str(inputs), "--baseline", str(tmp_path / "baseline.json")]
+    if expected_error != "--baseline requires --prompt-b":
+        args += ["--prompt-b", str(prompt)]
+
+    result = runner.invoke(cli.app, args + extra_args)
+
+    assert result.exit_code == 1
+    assert expected_error in result.output
+
+
+def test_cli_save_baseline_and_baseline_are_mutually_exclusive(tmp_path):
+    _, inputs = _write_inputs_and_prompt(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--inputs",
+            str(inputs),
+            "--save-baseline",
+            str(tmp_path / "b1.json"),
+            "--baseline",
+            str(tmp_path / "b2.json"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "mutually exclusive" in result.output
+
+
+def test_cli_baseline_compare_serves_side_a_from_file(tmp_path, monkeypatch):
+    from llmdiff.baseline import build_baseline_document, render_baseline
+    from llmdiff.config import ModelConfig as MC
+    from llmdiff.config import SideConfig as SC
+
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    baseline_side = SC(prompt="saved prompt", model_cfg=MC(model="saved-model"))
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        render_baseline(
+            build_baseline_document(
+                baseline_side,
+                [(PromptCase(id="case-1", user="hello"), "saved answer")],
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    async def fake_run_diffs(cfg, **kwargs):
+        captured["cfg"] = cfg
+        captured["baseline_responses"] = kwargs.get("baseline_responses")
+        return [_mk_diff("case-1", changed=False)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.setattr(cli, "render_case_inline", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "render_summary", lambda *_a, **_k: None)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-b",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--baseline",
+            str(baseline_path),
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cfg"].side_a.prompt == "saved prompt"
+    assert captured["cfg"].side_a.model_cfg.model == "saved-model"
+    assert captured["baseline_responses"] == {"case-1": "saved answer"}
+
+
+def test_cli_baseline_compare_rejects_stale_baseline(tmp_path):
+    from llmdiff.baseline import build_baseline_document, render_baseline
+    from llmdiff.config import ModelConfig as MC
+    from llmdiff.config import SideConfig as SC
+
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        render_baseline(
+            build_baseline_document(
+                SC(prompt="saved prompt", model_cfg=MC(model="m")),
+                [(PromptCase(id="case-1", user="an older question"), "answer")],
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-b",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--baseline",
+            str(baseline_path),
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "input changed since the baseline: case-1" in result.output
+
+
+def test_cli_runs_flag_enables_stability_mode(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--runs",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cfg"].runs == 5
+
+
+def test_cli_runs_requires_semantic_scoring():
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "missing-a.txt",
+            "--prompt-b",
+            "missing-b.txt",
+            "--inputs",
+            "missing-cases.json",
+            "--runs",
+            "3",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--runs requires semantic scoring" in result.output
+
+
 def test_cli_seed_applies_to_both_sides(tmp_path, monkeypatch):
     prompt_a = tmp_path / "prompt-a.txt"
     prompt_b = tmp_path / "prompt-b.txt"
@@ -280,6 +645,507 @@ def test_cli_base_url_a_falls_back_to_base_url(tmp_path, monkeypatch):
     cfg = captured["cfg"]
     assert cfg.side_a.model_cfg.base_url == "http://side-a:11434"
     assert cfg.side_b.model_cfg.base_url == "http://default:11434"
+
+
+def _write_tagged_inputs(tmp_path):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(
+        json.dumps(
+            [
+                {"id": "greet", "user": "hi", "tags": ["smoke"]},
+                {"id": "refuse", "user": "no", "tags": ["safety", "slow"]},
+                {"id": "untagged", "user": "hey"},
+            ]
+        )
+    )
+    return prompt_a, prompt_b, inputs
+
+
+def _invoke_with_tags(tmp_path, monkeypatch, extra_args):
+    prompt_a, prompt_b, inputs = _write_tagged_inputs(tmp_path)
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            *extra_args,
+        ],
+    )
+    return result, captured
+
+
+def test_load_cases_accepts_and_strips_tags(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text('[{"id":"case-1","user":"hello","tags":[" smoke "]}]')
+
+    cases = cli._load_cases(path)
+
+    assert cases[0].tags == ["smoke"]
+
+
+def test_load_cases_rejects_blank_tags(tmp_path, capsys):
+    path = tmp_path / "cases.json"
+    path.write_text('[{"id":"case-1","user":"hello","tags":["  "]}]')
+
+    with pytest.raises(typer.Exit):
+        cli._load_cases(path)
+
+    captured = capsys.readouterr()
+    assert "tags must not be empty or whitespace" in captured.err
+
+
+def test_cli_tag_selects_matching_cases(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(tmp_path, monkeypatch, ["--tag", "smoke"])
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet"]
+    assert "running 1 of 3 cases" in result.output
+
+
+def test_cli_multiple_tags_match_any(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path, monkeypatch, ["--tag", "smoke", "--tag", "safety"]
+    )
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet", "refuse"]
+
+
+def test_cli_exclude_tag_drops_cases(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path, monkeypatch, ["--exclude-tag", "slow"]
+    )
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet", "untagged"]
+
+
+def test_cli_tag_and_exclude_tag_combine(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path,
+        monkeypatch,
+        ["--tag", "smoke", "--tag", "safety", "--exclude-tag", "slow"],
+    )
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet"]
+
+
+def test_cli_tag_with_no_matches_errors_with_available_tags(tmp_path, monkeypatch):
+    result, _captured = _invoke_with_tags(tmp_path, monkeypatch, ["--tag", "nope"])
+
+    assert result.exit_code == 1
+    assert "no test cases match the tag filter" in result.output
+    assert "available tags: safety, slow, smoke" in result.output
+
+
+def test_cli_unknown_tag_warns_but_runs(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path, monkeypatch, ["--tag", "smoke", "--tag", "typo"]
+    )
+
+    assert result.exit_code == 0
+    assert "tag(s) not present in any case: typo" in result.output
+    assert [c.id for c in captured["cfg"].cases] == ["greet"]
+
+
+def _policy_project(tmp_path, policy_toml):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+    (tmp_path / "llmdiff.toml").write_text(policy_toml, encoding="utf-8")
+    return [
+        "--prompt-a",
+        str(prompt_a),
+        "--prompt-b",
+        str(prompt_b),
+        "--inputs",
+        str(inputs),
+        "--no-semantic",
+    ]
+
+
+def test_cli_config_policy_fail_on_changed_applies(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nfail_on_changed = true\n")
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 1
+    assert "Regression policy loaded from llmdiff.toml" in result.output
+    assert "--fail-on-changed triggered" in result.output
+
+
+def test_cli_no_fail_on_changed_overrides_config(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nfail_on_changed = true\n")
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, [*args, "--no-fail-on-changed"])
+
+    assert result.exit_code == 0
+
+
+def test_cli_config_threshold_and_changed_when_feed_run_config(
+    tmp_path, monkeypatch
+):
+    args = _policy_project(
+        tmp_path, '[policy]\nthreshold = 0.75\nchanged_when = "lines"\n'
+    )
+    captured = {}
+
+    async def fake_run(cfg, **kwargs):
+        captured["cfg"] = cfg
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.threshold == 0.75
+    assert cfg.changed_when == ChangedWhen.LINES
+    assert cfg.filter_changed is True  # threshold implies filtering
+
+
+def test_cli_threshold_flag_overrides_config(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nthreshold = 0.75\n")
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, [*args, "--threshold", "0.5"])
+
+    assert result.exit_code == 0
+    assert captured["cfg"].threshold == 0.5
+
+
+def test_cli_explicit_config_path_missing_errors(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, [*args, "--config", "nope.toml"])
+
+    assert result.exit_code == 1
+    assert "config file not found" in result.output
+
+
+def test_cli_invalid_config_policy_errors(tmp_path, monkeypatch):
+    args = _policy_project(tmp_path, "[policy]\nfail_on_change = true\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 1
+    assert "unknown key(s) in [policy]" in result.output
+
+
+def test_cli_save_baseline_ignores_config_policy(tmp_path, monkeypatch):
+    _policy_project(tmp_path, "[policy]\nfail_on_changed = true\n")
+
+    captured = {}
+
+    async def fake_run_snapshot(side, cases, **kwargs):
+        captured["side"] = side
+
+    monkeypatch.setattr(cli, "_run_snapshot", fake_run_snapshot)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "prompt-a.txt",
+            "--inputs",
+            "cases.json",
+            "--no-semantic",
+            "--save-baseline",
+            "baseline.json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "side" in captured
+
+
+def test_cli_junit_output_writes_parseable_xml(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(
+        json.dumps([{"id": "case-1", "user": "x"}, {"id": "case-2", "user": "y"}])
+    )
+    report = tmp_path / "report.xml"
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True), _mk_diff("case-2", changed=False)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            "--format",
+            "junit",
+            "--output",
+            str(report),
+        ],
+    )
+
+    assert result.exit_code == 0
+    root = ElementTree.fromstring(report.read_text(encoding="utf-8"))
+    assert root.get("tests") == "2"
+    assert root.get("failures") == "1"
+    assert root.find("./testsuite/testcase[@name='case-1']/failure") is not None
+    assert root.find("./testsuite/testcase[@name='case-2']/failure") is None
+
+
+def test_cli_sarif_output_points_at_inputs_file(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}], indent=2))
+    report = tmp_path / "report.sarif"
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "prompt-a.txt",
+            "--prompt-b",
+            "prompt-b.txt",
+            "--inputs",
+            "cases.json",
+            "--no-semantic",
+            "--format",
+            "sarif",
+            "--output",
+            "report.sarif",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sarif = json.loads(report.read_text(encoding="utf-8"))
+    entry = sarif["runs"][0]["results"][0]
+    assert "case-1" in entry["message"]["text"]
+    location = entry["locations"][0]["physicalLocation"]
+    assert location["artifactLocation"]["uri"] == "cases.json"
+    # indent=2 puts the "id" key of the first case on line 3.
+    assert location["region"]["startLine"] == 3
+
+
+def test_cli_diff_mode_and_ignore_toggles_set_run_config(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            "--diff-mode",
+            "sentence",
+            "--ignore-whitespace",
+            "--ignore-case",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.diff_mode == DiffMode.SENTENCE
+    assert cfg.ignore_whitespace is True
+    assert cfg.ignore_case is True
+
+
+def test_cli_diff_mode_defaults_to_line(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.diff_mode == DiffMode.LINE
+    assert cfg.ignore_whitespace is False
+    assert cfg.ignore_case is False
+
+
+def test_cli_side_by_side_flag_sets_run_config(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--side-by-side",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cfg"].side_by_side is True
+
+
+def test_cli_side_by_side_requires_inline_format():
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "missing-a.txt",
+            "--prompt-b",
+            "missing-b.txt",
+            "--inputs",
+            "missing-cases.json",
+            "--side-by-side",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--side-by-side only applies to the inline format" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_side_by_side_uses_columnar_renderer(monkeypatch):
+    side_a = SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2"))
+    side_b = SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2"))
+    cfg = RunConfig(
+        side_a=side_a,
+        side_b=side_b,
+        cases=[PromptCase(id="case-1", user="hello")],
+        semantic=False,
+        output_format=OutputFormat.INLINE,
+        side_by_side=True,
+    )
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    rendered = {"inline": [], "side_by_side": []}
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.setattr(
+        cli,
+        "render_case_inline",
+        lambda result, **_kwargs: rendered["inline"].append(result.case_id),
+    )
+    monkeypatch.setattr(
+        cli,
+        "render_case_side_by_side",
+        lambda result, **_kwargs: rendered["side_by_side"].append(result.case_id),
+    )
+    monkeypatch.setattr(cli, "render_summary", lambda *_args, **_kwargs: None)
+
+    await cli._run(cfg)
+
+    assert rendered["side_by_side"] == ["case-1"]
+    assert rendered["inline"] == []
 
 
 @pytest.mark.asyncio

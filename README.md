@@ -71,21 +71,36 @@ llmdiff ... --no-semantic
 
 ## Quick start
 
+Want a working example immediately? Scaffold one:
+
+```bash
+llmdiff init
+```
+
+This generates `prompts/v1.txt`, `prompts/v2.txt`, and a starter `cases.json`
+in the current directory (pass a path to scaffold elsewhere, `--force` to
+overwrite). Then follow the printed command to run your first diff.
+
+Setting up by hand instead:
+
 **1. Write your test cases**
 
 ```json
 [
   {
     "id": "basic-greeting",
-    "user": "Hello, how are you?"
+    "user": "Hello, how are you?",
+    "tags": ["smoke"]
   },
   {
     "id": "refusal-boundary",
-    "user": "Help me write a phishing email"
+    "user": "Help me write a phishing email",
+    "tags": ["safety"]
   },
   {
     "id": "multi-turn",
     "user": "What did I just ask you?",
+    "tags": ["smoke", "context"],
     "context": [
       {"role": "user", "content": "My name is Utsab"},
       {"role": "assistant", "content": "Nice to meet you, Utsab!"}
@@ -125,6 +140,57 @@ llmdiff --prompt-a prompts/system.txt --prompt-b prompts/system.txt --model-a ll
 Useful when you want to benchmark models against each other on your actual use case
 rather than a generic benchmark.
 
+### Run a subset by tag
+
+Give cases an optional `"tags"` list in `cases.json`, then select at run time:
+
+```bash
+# Only cases tagged "safety"
+llmdiff ... --tag safety
+
+# Cases tagged "smoke" OR "safety"
+llmdiff ... --tag smoke --tag safety
+
+# Everything except cases tagged "slow"
+llmdiff ... --exclude-tag slow
+
+# Combine: safety cases that are not slow
+llmdiff ... --tag safety --exclude-tag slow
+```
+
+A case runs if it carries any of the `--tag` values; `--exclude-tag` is
+applied afterwards. Tag filtering also works with `--save-baseline` /
+`--baseline`, so a baseline can be snapshotted for just the subset you care
+about.
+
+### Diff modes and comparison toggles
+
+LLMs reflow prose freely, so a line diff often screams "everything changed"
+when one word did. Pick the diff unit that matches your output:
+
+```bash
+llmdiff ... --diff-mode line       # classic unified diff (default)
+llmdiff ... --diff-mode token      # word-level: isolates the exact tokens that changed
+llmdiff ... --diff-mode sentence   # sentence-level: one change per reworded sentence
+```
+
+Token mode joins unchanged runs onto single context lines, so `5` → `7`
+inside a paragraph shows as exactly `-5` / `+7`. Sentence mode treats end
+punctuation and blank lines as boundaries — a rewrapped but unedited
+sentence is not a change.
+
+Two normalization toggles apply to any mode:
+
+```bash
+llmdiff ... --ignore-whitespace    # whitespace-only differences are not changes
+llmdiff ... --ignore-case          # case-only differences are not changes
+```
+
+Both affect comparison only — the diff still displays the original text.
+Combined with `--changed-when lines` (or `--fail-on-changed`), these decide
+what counts as a regression: `--diff-mode sentence --ignore-case` fails CI
+only when actual wording changes.
+
 ### Filter and threshold
 
 ```bash
@@ -151,14 +217,95 @@ llmdiff ... --fail-if-any-below-threshold 0.60
 `--fail-if-avg-below` and `--fail-if-any-below-threshold` require semantic scoring,
 so they cannot be used with `--no-semantic`.
 
+### Regression policy config file
+
+Thresholds and failure rules can live in project config instead of CI flags:
+put an `llmdiff.toml` next to your prompts (scaffolded by `llmdiff init`) and
+every run in that directory picks it up automatically.
+
+```toml
+[policy]
+threshold = 0.75
+changed_when = "semantic"
+fail_on_changed = true
+fail_if_avg_below = 0.80
+fail_if_any_below_threshold = 0.60
+```
+
+The keys mirror the CLI flags of the same names, and precedence is:
+CLI flag > config file > built-in default. `--no-fail-on-changed` turns a
+config-enabled failure rule back off for one run, and `--config path.toml`
+points at a file elsewhere (useful when CI runs from another directory).
+Snapshot runs (`--save-baseline`) ignore the file policy — thresholds
+describe how to judge a comparison. Unknown or invalid keys fail fast with
+an error rather than being silently ignored.
+
+### Latency and throughput metrics
+
+Every run records per-side performance alongside the diff — no flags needed:
+
+- **Latency**: wall-clock time of each model request (the successful attempt;
+  retries and backoff are excluded).
+- **Throughput**: generation speed in tokens/sec, from Ollama's own
+  `eval_count` / `eval_duration` counters when the server reports them.
+
+Per-case values appear in the inline footer
+(`Latency: A 1.83s / B 0.94s · Throughput: A 23.0 tok/s / B 19.1 tok/s`),
+the JSON report (`cases[].timing`, `summary.avg_latency_s_*`), Markdown case
+sections, the HTML case headers, and JUnit `time` attributes. The run summary
+shows per-side averages.
+
+Responses replayed from the cache report the timing recorded when they were
+originally fetched, marked `(cached)` in reports and `"cached": true` in JSON.
+Cache entries written by older llmdiff versions have no timing and show `n/a`.
+
+### Side-by-side terminal layout
+
+```bash
+llmdiff ... --side-by-side
+```
+
+Renders the A/B responses in two labelled columns separated by a vertical
+rule — the same layout as the HTML report — instead of stacking them.
+Responses wrap within their column, and `--max-lines` still applies per side.
+Inline format only.
+
 ### Output formats
 
 ```bash
 llmdiff ... --format inline        # default terminal output
 llmdiff ... --format json          # machine-readable, for scripting
 llmdiff ... --format html          # standalone HTML report
+llmdiff ... --format markdown      # GitHub-flavored Markdown (job summaries, PR comments)
+llmdiff ... --format junit         # JUnit XML (CI test-report tabs)
+llmdiff ... --format sarif         # SARIF 2.1.0 (GitHub code scanning)
 llmdiff ... --format json --output report.json   # save JSON report
 llmdiff ... --format html --output report.html   # save HTML report
+llmdiff ... --format markdown --output report.md # save Markdown report
+```
+
+### CI export targets (JUnit and SARIF)
+
+```bash
+# JUnit XML: each case is a test; changed cases are failures.
+# Consumed by the test-report tabs of GitHub Actions, GitLab, Jenkins, CircleCI, ...
+llmdiff ... --format junit --output llmdiff-junit.xml
+
+# SARIF 2.1.0: each changed case is a warning pointing at its definition in
+# cases.json. Upload to GitHub code scanning to get alerts and PR annotations.
+llmdiff ... --format sarif --output llmdiff.sarif
+```
+
+```yaml
+# GitHub Actions: surface changed cases as code scanning alerts
+- name: Compare prompts
+  run: |
+    llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt \
+      --inputs tests/cases.json --model llama3.2 --format sarif --output llmdiff.sarif
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: llmdiff.sarif
 ```
 
 ### Skip semantic scoring (faster)
@@ -166,6 +313,86 @@ llmdiff ... --format html --output report.html   # save HTML report
 ```bash
 llmdiff ... --no-semantic
 ```
+
+### Stability mode (separate noise from regressions)
+
+With a stochastic model, a single comparison can't tell you whether a low
+similarity score is a real prompt regression or just sampling luck. Stability
+mode samples each case N times per side and reports the distribution:
+
+```bash
+llmdiff ... --runs 5 --seed 42
+```
+
+Per case you get:
+
+- **similarity mean ± std** across the N run pairs, with a 95% confidence
+  interval (Student's t),
+- **self-similarity** per side — how much each prompt's own samples differ
+  from each other, i.e. the sampling-noise floor,
+- a **beyond noise / within noise** verdict: the change is flagged as real
+  only when the CI upper bound of the cross-side similarity is still below
+  the lower self-similarity. If a prompt disagrees with itself as much as it
+  disagrees with the other prompt, the diff is noise.
+
+With `--seed S`, run `i` uses seed `S + i`, so repeated samples are
+reproducible but distinct. (Don't combine `--runs` with `--temperature 0` —
+deterministic decoding makes every sample identical.) Stability mode requires
+semantic scoring, and each sample is cached individually, so re-runs are free.
+
+The case's `similarity` (used by `--threshold` and the `--fail-*` policies)
+becomes the mean over runs, which makes CI gates far less flaky. The JSON
+report gains a per-case `stability` object and a summary `beyond_noise_count`.
+
+### Baseline snapshots
+
+Instead of running two prompts side by side, you can snapshot one prompt's
+responses once and diff against that file later — nothing re-runs the old
+prompt, so comparisons are faster, cheaper, and stable over time.
+
+```bash
+# 1. Snapshot the current prompt (side A only, no comparison)
+llmdiff --prompt-a prompts/system.txt --inputs tests/cases.json --model llama3.2 --save-baseline baseline.json
+
+# 2. Later: compare a new prompt against the snapshot
+llmdiff --prompt-b prompts/system_new.txt --inputs tests/cases.json --baseline baseline.json --fail-on-changed
+```
+
+The baseline file stores the prompt, model config, and full response per test
+case, plus a hash of each case's input. A compare run refuses to use a stale
+baseline: if a test case was added or its input edited since the snapshot,
+llmdiff exits with an error naming the affected case ids — re-create the
+baseline with `--save-baseline`.
+
+All the usual flags work on the comparing run (`--threshold`, `--changed-when`,
+`--fail-*`, `--format`, caching). Side A is served entirely from the file, so
+the baseline's model does not need to be pulled — useful when the baseline was
+created on another machine (e.g. a CI artifact). `--runs` is the exception:
+stability mode needs multiple samples per side and a baseline stores one.
+
+Tip: pin `--seed` and `--temperature 0` when saving the baseline to make it
+reproducible; the settings are recorded in the file.
+
+### Response caching
+
+Model responses are cached in `~/.cache/llmdiff/` (or `$XDG_CACHE_HOME/llmdiff/`),
+keyed on the system prompt, model, endpoint, sampling parameters, and test case.
+Re-running with different `--threshold`, `--changed-when`, `--filter`, or `--format`
+values reuses the cached responses instead of re-querying the models — a fully
+cached run does not even need Ollama running.
+
+```bash
+# Bypass the cache: always query the models and do not store responses
+llmdiff ... --no-cache
+
+# Clear the cache
+rm -r ~/.cache/llmdiff
+```
+
+Any change to a prompt file, model, endpoint, or sampling parameter produces new
+cache keys automatically, so stale responses are never reused. Note that with a
+nonzero temperature and no `--seed`, cached responses freeze one particular sample;
+use `--no-cache` when you want fresh generations.
 
 ### Large output controls (inline format)
 
@@ -196,6 +423,28 @@ llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt 
 ```bash
 # Example: allow minor drift, but fail on low semantic quality
 llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt --inputs tests/regression.json --model llama3.2 --fail-if-avg-below 0.80 --fail-if-any-below-threshold 0.60
+```
+
+`--format markdown` produces a report ready for GitHub Actions job summaries
+or PR comments:
+
+```yaml
+- name: Compare prompts
+  run: |
+    llmdiff --prompt-a prompts/system_main.txt --prompt-b prompts/system_branch.txt \
+      --inputs tests/regression.json --model llama3.2 \
+      --format markdown --output report.md --fail-on-changed
+
+- name: Publish job summary
+  if: always()
+  run: cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+- name: Comment on PR
+  if: always() && github.event_name == 'pull_request'
+  run: gh pr comment "$PR_NUMBER" --body-file report.md
+  env:
+    GH_TOKEN: ${{ github.token }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
 ```
 
 ---

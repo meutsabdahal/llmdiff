@@ -121,9 +121,10 @@ async def test_call_ollama_includes_seed_in_request_options():
         model_cfg=ModelConfig(model="llama3.2", seed=42),
     )
 
-    result = await _call_ollama(CapturingClient(), side, [])
+    content, timing = await _call_ollama(CapturingClient(), side, [])
 
-    assert result == "ok"
+    assert content == "ok"
+    assert timing.latency_s >= 0
     assert captured["payload"]["options"]["seed"] == 42
 
 
@@ -248,8 +249,8 @@ async def test_run_diffs_checks_models_for_each_endpoint(monkeypatch):
     async def fake_check_models_available(_client, endpoint, models):
         calls.append((endpoint, tuple(models)))
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case):
-        return "same", "same"
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
+        return "same", "same", None, None
 
     monkeypatch.setattr(runner, "check_models_available", fake_check_models_available)
     monkeypatch.setattr(runner, "run_case", fake_run_case)
@@ -279,8 +280,8 @@ async def test_run_diffs_can_skip_model_availability_check(monkeypatch):
     async def fake_check_models_available(_client, endpoint, models):
         calls.append(endpoint)
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case):
-        return "same", "same"
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
+        return "same", "same", None, None
 
     monkeypatch.setattr(runner, "check_models_available", fake_check_models_available)
     monkeypatch.setattr(runner, "run_case", fake_run_case)
@@ -307,10 +308,10 @@ async def test_run_diffs_uses_batched_semantic_scoring(monkeypatch):
     async def fake_check_models_available(*_args, **_kwargs):
         return None
 
-    async def fake_run_case(_client, _semaphore, _cfg, case):
+    async def fake_run_case(_client, _semaphore, _cfg, case, cache=None, baseline_responses=None):
         if case.id == "same":
-            return "same output", "same output"
-        return "left output", "right output"
+            return "same output", "same output", None, None
+        return "left output", "right output", None, None
 
     semantic_calls = {}
 
@@ -349,8 +350,8 @@ async def test_run_diffs_invokes_progress_callbacks(monkeypatch):
     async def fake_check_models_available(*_args, **_kwargs):
         return None
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case):
-        return "same output", "same output"
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
+        return "same output", "same output", None, None
 
     def fake_semantic_similarities(_pairs, _batch_size):
         return [1.0]
@@ -384,3 +385,42 @@ async def test_run_diffs_invokes_progress_callbacks(monkeypatch):
     assert callbacks["cases"] == ["case-1"]
     assert callbacks["semantic_started"] == 1
     assert callbacks["semantic_completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_call_ollama_reports_latency_and_throughput():
+    class Client:
+        async def post(self, url, json=None, timeout=None):
+            return _response(
+                "POST",
+                url,
+                200,
+                json_body={
+                    "message": {"content": "ok"},
+                    "eval_count": 50,
+                    "eval_duration": 2_000_000_000,  # 2s in ns -> 25 tok/s
+                },
+            )
+
+    content, timing = await _call_ollama(Client(), _side(), [])
+
+    assert content == "ok"
+    assert timing.latency_s >= 0
+    assert timing.tokens == 50
+    assert timing.tokens_per_s == pytest.approx(25.0)
+    assert timing.cached is False
+
+
+@pytest.mark.asyncio
+async def test_call_ollama_tolerates_missing_eval_counters():
+    class Client:
+        async def post(self, url, json=None, timeout=None):
+            return _response(
+                "POST", url, 200, json_body={"message": {"content": "ok"}}
+            )
+
+    content, timing = await _call_ollama(Client(), _side(), [])
+
+    assert content == "ok"
+    assert timing.tokens is None
+    assert timing.tokens_per_s is None

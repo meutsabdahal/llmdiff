@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import math
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from threading import Lock
 
@@ -31,7 +32,9 @@ def _get_model():
                 except Exception:
                     raise RuntimeError(_MISSING_SEMANTIC_DEPS_MSG) from None
 
-                Console().print(
+                # stderr, not stdout: piped --format json/html output must
+                # stay parseable, and this notice would corrupt it.
+                Console(stderr=True).print(
                     "[dim]Loading embedding model (first run only)...[/dim]"
                 )
                 _model = SentenceTransformer(
@@ -92,6 +95,137 @@ def semantic_similarities(
     return scores
 
 
+# Two-sided 95% critical values of Student's t-distribution, keyed by degrees
+# of freedom. Covers df 1..24, i.e. up to MAX_STABILITY_RUNS samples; the
+# normal approximation is the defensive fallback beyond that.
+_T_CRITICAL_95 = {
+    1: 12.706,
+    2: 4.303,
+    3: 3.182,
+    4: 2.776,
+    5: 2.571,
+    6: 2.447,
+    7: 2.365,
+    8: 2.306,
+    9: 2.262,
+    10: 2.228,
+    11: 2.201,
+    12: 2.179,
+    13: 2.160,
+    14: 2.145,
+    15: 2.131,
+    16: 2.120,
+    17: 2.110,
+    18: 2.101,
+    19: 2.093,
+    20: 2.086,
+    21: 2.080,
+    22: 2.074,
+    23: 2.069,
+    24: 2.064,
+}
+_Z_CRITICAL_95 = 1.960
+
+
+@dataclass
+class StabilityStats:
+    """Per-case variance metrics from a stability-mode run (N samples/side).
+
+    beyond_noise is True when even the 95% CI upper bound of the cross-side
+    similarity stays below the lower of the two self-consistency scores: the
+    prompts' outputs differ more than either prompt differs from itself, so
+    the change cannot be explained by sampling noise alone.
+    """
+
+    runs: int
+    similarity_mean: float
+    similarity_std: float
+    ci95_low: float
+    ci95_high: float
+    self_similarity_a: float
+    self_similarity_b: float
+    beyond_noise: bool
+
+
+def _mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values)
+
+
+def compute_stability_stats(
+    cross_similarities: Sequence[float],
+    self_similarities_a: Sequence[float],
+    self_similarities_b: Sequence[float],
+) -> StabilityStats:
+    """Aggregate similarity scores from N repeated runs of one case.
+
+    cross_similarities holds sim(A_i, B_i) for each run i; the self lists
+    hold pairwise similarities within one side's samples (its noise floor).
+    """
+    runs = len(cross_similarities)
+    if runs < 2:
+        raise ValueError("stability stats require at least 2 runs")
+    if not self_similarities_a or not self_similarities_b:
+        raise ValueError("stability stats require self-similarity scores")
+
+    mean = _mean(cross_similarities)
+    variance = sum((s - mean) ** 2 for s in cross_similarities) / (runs - 1)
+    std = math.sqrt(variance)
+
+    t_critical = _T_CRITICAL_95.get(runs - 1, _Z_CRITICAL_95)
+    half_width = t_critical * std / math.sqrt(runs)
+    ci95_low = max(0.0, mean - half_width)
+    ci95_high = min(1.0, mean + half_width)
+
+    self_a = _mean(self_similarities_a)
+    self_b = _mean(self_similarities_b)
+    noise_floor = min(self_a, self_b)
+
+    return StabilityStats(
+        runs=runs,
+        similarity_mean=mean,
+        similarity_std=std,
+        ci95_low=ci95_low,
+        ci95_high=ci95_high,
+        self_similarity_a=self_a,
+        self_similarity_b=self_b,
+        beyond_noise=ci95_high < noise_floor,
+    )
+
+
+@dataclass
+class SideTiming:
+    """Request timing for one side of a case.
+
+    latency_s is client wall-clock time for the successful request (retries
+    excluded). tokens and tokens_per_s come from Ollama's eval_count /
+    eval_duration when the response includes them. cached marks values
+    replayed from the response cache — they were measured when the response
+    was originally fetched, not during this run. In stability mode the values
+    are means over the run's samples.
+    """
+
+    latency_s: float
+    tokens: int | None = None
+    tokens_per_s: float | None = None
+    cached: bool = False
+
+
+def aggregate_timings(timings: Sequence[SideTiming | None]) -> SideTiming | None:
+    """Mean timing over stability-mode samples; None if nothing was timed."""
+    present = [t for t in timings if t is not None]
+    if not present:
+        return None
+
+    token_counts = [t.tokens for t in present if t.tokens is not None]
+    rates = [t.tokens_per_s for t in present if t.tokens_per_s is not None]
+    return SideTiming(
+        latency_s=_mean([t.latency_s for t in present]),
+        tokens=round(_mean(token_counts)) if token_counts else None,
+        tokens_per_s=_mean(rates) if rates else None,
+        cached=any(t.cached for t in present),
+    )
+
+
 @dataclass
 class Summary:
     total: int
@@ -100,6 +234,11 @@ class Summary:
     avg_similarity: float | None
     most_diverged: tuple[str, float] | None  # (case_id, similarity)
     least_changed: tuple[str, float] | None
+    beyond_noise: int | None = None  # stability mode only
+    avg_latency_a: float | None = None  # seconds, mean over timed cases
+    avg_latency_b: float | None = None
+    avg_tokens_per_s_a: float | None = None
+    avg_tokens_per_s_b: float | None = None
 
 
 def compute_summary(results) -> Summary:
@@ -112,6 +251,30 @@ def compute_summary(results) -> Summary:
     most_diverged = min(sims, key=lambda x: x[1]) if sims else None
     least_changed = max(sims, key=lambda x: x[1]) if sims else None
 
+    stability = [
+        s for r in results if (s := getattr(r, "stability", None)) is not None
+    ]
+    beyond_noise = (
+        sum(1 for s in stability if s.beyond_noise) if stability else None
+    )
+
+    def _avg_latency(attr: str) -> float | None:
+        latencies = [
+            t.latency_s
+            for r in results
+            if (t := getattr(r, attr, None)) is not None
+        ]
+        return _mean(latencies) if latencies else None
+
+    def _avg_rate(attr: str) -> float | None:
+        rates = [
+            t.tokens_per_s
+            for r in results
+            if (t := getattr(r, attr, None)) is not None
+            and t.tokens_per_s is not None
+        ]
+        return _mean(rates) if rates else None
+
     return Summary(
         total=len(results),
         changed=len(changed),
@@ -119,4 +282,9 @@ def compute_summary(results) -> Summary:
         avg_similarity=avg_sim,
         most_diverged=most_diverged,
         least_changed=least_changed,
+        beyond_noise=beyond_noise,
+        avg_latency_a=_avg_latency("timing_a"),
+        avg_latency_b=_avg_latency("timing_b"),
+        avg_tokens_per_s_a=_avg_rate("timing_a"),
+        avg_tokens_per_s_b=_avg_rate("timing_b"),
     )

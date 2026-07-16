@@ -5,11 +5,34 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+# Upper bound for stability-mode runs per case; keeps the t-distribution
+# table in metrics.py exhaustive and the request volume sane.
+MAX_STABILITY_RUNS = 25
+
 
 class OutputFormat(str, Enum):
     INLINE = "inline"
     JSON = "json"
     HTML = "html"
+    MARKDOWN = "markdown"
+    JUNIT = "junit"
+    SARIF = "sarif"
+
+
+class DiffMode(str, Enum):
+    """Granularity of the textual diff.
+
+    LINE: classic unified diff over lines (default).
+    TOKEN: diff over whitespace-separated tokens, with contiguous runs
+    joined per output line — robust to reflowed prose where lines shift
+    but the wording barely changes.
+    SENTENCE: diff over sentences, so a reworded sentence shows as one
+    change instead of a cascade of shifted lines.
+    """
+
+    LINE = "line"
+    TOKEN = "token"
+    SENTENCE = "sentence"
 
 
 class ChangedWhen(str, Enum):
@@ -69,6 +92,13 @@ class TestCase(BaseModel):
     id: str
     user: str
     context: list[ChatMessage] | None = None  # prior conversation turns
+    tags: list[str] = []  # labels for selective execution via --tag
+
+    def messages(self) -> list[dict[str, str]]:
+        """Chat messages for this case: context turns, then the user turn."""
+        msgs = [m.model_dump() for m in (self.context or [])]
+        msgs.append({"role": "user", "content": self.user})
+        return msgs
 
     @field_validator("id", "user")
     @classmethod
@@ -77,20 +107,33 @@ class TestCase(BaseModel):
             raise ValueError("must not be empty")
         return v
 
+    @field_validator("tags")
+    @classmethod
+    def tags_must_not_be_blank(cls, v: list[str]) -> list[str]:
+        cleaned = [tag.strip() for tag in v]
+        if any(not tag for tag in cleaned):
+            raise ValueError("tags must not be empty or whitespace")
+        return cleaned
+
 
 class RunConfig(BaseModel):
     side_a: SideConfig
     side_b: SideConfig
     cases: list[TestCase]
     concurrency: int = 3  # conservative default for local models
+    runs: int = 1  # >1 enables stability mode (N samples per case per side)
     semantic: bool = True
     semantic_batch_size: int = 24
     output_format: OutputFormat = OutputFormat.INLINE
+    side_by_side: bool = False  # two-column A/B layout for inline output
     max_response_lines: int = 40
     max_diff_lines: int = 120
     filter_changed: bool = False
     threshold: float | None = None
     changed_when: ChangedWhen = ChangedWhen.ANY
+    diff_mode: DiffMode = DiffMode.LINE
+    ignore_whitespace: bool = False  # collapse whitespace runs when comparing
+    ignore_case: bool = False  # casefold text when comparing
 
     @field_validator("cases")
     @classmethod
@@ -104,6 +147,13 @@ class RunConfig(BaseModel):
     def concurrency_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("concurrency must be at least 1")
+        return v
+
+    @field_validator("runs")
+    @classmethod
+    def runs_range(cls, v: int) -> int:
+        if not (1 <= v <= MAX_STABILITY_RUNS):
+            raise ValueError(f"runs must be between 1 and {MAX_STABILITY_RUNS}")
         return v
 
     @field_validator("semantic_batch_size")
