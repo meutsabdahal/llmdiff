@@ -636,6 +636,95 @@ def test_cli_base_url_a_falls_back_to_base_url(tmp_path, monkeypatch):
     assert cfg.side_b.model_cfg.base_url == "http://default:11434"
 
 
+def test_cli_side_by_side_flag_sets_run_config(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--side-by-side",
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cfg"].side_by_side is True
+
+
+def test_cli_side_by_side_requires_inline_format():
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            "missing-a.txt",
+            "--prompt-b",
+            "missing-b.txt",
+            "--inputs",
+            "missing-cases.json",
+            "--side-by-side",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--side-by-side only applies to the inline format" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_side_by_side_uses_columnar_renderer(monkeypatch):
+    side_a = SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2"))
+    side_b = SideConfig(prompt="Prompt B", model_cfg=ModelConfig(model="llama3.2"))
+    cfg = RunConfig(
+        side_a=side_a,
+        side_b=side_b,
+        cases=[PromptCase(id="case-1", user="hello")],
+        semantic=False,
+        output_format=OutputFormat.INLINE,
+        side_by_side=True,
+    )
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("case-1", changed=True)]
+
+    rendered = {"inline": [], "side_by_side": []}
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.setattr(
+        cli,
+        "render_case_inline",
+        lambda result, **_kwargs: rendered["inline"].append(result.case_id),
+    )
+    monkeypatch.setattr(
+        cli,
+        "render_case_side_by_side",
+        lambda result, **_kwargs: rendered["side_by_side"].append(result.case_id),
+    )
+    monkeypatch.setattr(cli, "render_summary", lambda *_args, **_kwargs: None)
+
+    await cli._run(cfg)
+
+    assert rendered["side_by_side"] == ["case-1"]
+    assert rendered["inline"] == []
+
+
 @pytest.mark.asyncio
 async def test_run_filters_unchanged_cases(monkeypatch):
     side_a = SideConfig(prompt="Prompt A", model_cfg=ModelConfig(model="llama3.2"))

@@ -43,7 +43,11 @@ from llmdiff.metrics import compute_summary
 from llmdiff.renderers.html import render_html
 from llmdiff.renderers.json_ import render_json
 from llmdiff.renderers.markdown import render_markdown
-from llmdiff.renderers.terminal import render_case_inline, render_summary
+from llmdiff.renderers.terminal import (
+    render_case_inline,
+    render_case_side_by_side,
+    render_summary,
+)
 from llmdiff.runner import (
     MAX_RETRY_ATTEMPTS,
     MAX_RETRY_BACKOFF_SECONDS,
@@ -646,6 +650,14 @@ def main(
         max=1.0,
         help="Exit with code 1 when any case similarity is below this value.",
     ),
+    side_by_side: bool = typer.Option(
+        False,
+        "--side-by-side",
+        help=(
+            "Render the A/B responses in two columns (inline format only), "
+            "matching the HTML report layout."
+        ),
+    ),
     max_lines: int = typer.Option(
         40,
         "--max-lines",
@@ -790,6 +802,14 @@ def main(
         )
         raise typer.Exit(1)
 
+    if side_by_side and output_format != OutputFormat.INLINE:
+        typer.echo(
+            "Error: --side-by-side only applies to the inline format "
+            "(remove --format).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     if no_semantic and (
         fail_if_avg_below is not None or fail_if_any_below_threshold is not None
     ):
@@ -901,6 +921,7 @@ def main(
         semantic=not no_semantic,
         semantic_batch_size=semantic_batch_size,
         output_format=output_format,
+        side_by_side=side_by_side,
         max_response_lines=max_lines,
         max_diff_lines=max_diff_lines,
         filter_changed=filter_changed or (threshold is not None),
@@ -1067,8 +1088,11 @@ async def _run(
         else:
             print(out)
     else:
+        render_case = (
+            render_case_side_by_side if cfg.side_by_side else render_case_inline
+        )
         for result in display:
-            render_case_inline(
+            render_case(
                 result,
                 label_a=label_a,
                 label_b=label_b,

@@ -98,6 +98,7 @@ class RunConfig(BaseModel):
     semantic: bool = True
     semantic_batch_size: int = 24
     output_format: OutputFormat = OutputFormat.INLINE
+    side_by_side: bool = False  # two-column A/B layout for inline output
     max_response_lines: int = 40
     max_diff_lines: int = 120
     filter_changed: bool = False

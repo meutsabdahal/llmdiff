@@ -163,6 +163,17 @@ llmdiff ... --fail-if-any-below-threshold 0.60
 `--fail-if-avg-below` and `--fail-if-any-below-threshold` require semantic scoring,
 so they cannot be used with `--no-semantic`.
 
+### Side-by-side terminal layout
+
+```bash
+llmdiff ... --side-by-side
+```
+
+Renders the A/B responses in two labelled columns separated by a vertical
+rule — the same layout as the HTML report — instead of stacking them.
+Responses wrap within their column, and `--max-lines` still applies per side.
+Inline format only.
+
 ### Output formats
 
 ```bash
