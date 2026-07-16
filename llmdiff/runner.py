@@ -643,6 +643,9 @@ async def _run_stability_diffs(
                 stability=stats,
                 timing_a=aggregate_timings(timings_a),
                 timing_b=aggregate_timings(timings_b),
+                diff_mode=cfg.diff_mode,
+                ignore_whitespace=cfg.ignore_whitespace,
+                ignore_case=cfg.ignore_case,
             )
         )
 
@@ -747,6 +750,9 @@ async def run_diffs(
             changed_when=cfg.changed_when,
             timing_a=timing_a,
             timing_b=timing_b,
+            diff_mode=cfg.diff_mode,
+            ignore_whitespace=cfg.ignore_whitespace,
+            ignore_case=cfg.ignore_case,
         )
         for (case, resp_a, resp_b, timing_a, timing_b), similarity in zip(
             responses, similarities

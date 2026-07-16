@@ -4,7 +4,7 @@ import difflib
 import re
 from dataclasses import dataclass
 
-from llmdiff.config import ChangedWhen
+from llmdiff.config import ChangedWhen, DiffMode
 from llmdiff.metrics import SideTiming, StabilityStats
 
 
@@ -13,7 +13,7 @@ class DiffResult:
     case_id: str
     response_a: str
     response_b: str
-    unified_diff: list[str]  # line-level output of difflib.unified_diff
+    unified_diff: list[str]  # unified-diff-shaped rows in the configured DiffMode
     changed: bool
     similarity: float | None  # None if --no-semantic; mean over runs in stability mode
     length_a: int  # word count
@@ -57,6 +57,97 @@ def _structural_diff(a: str, b: str) -> dict:
     }
 
 
+# Sentence boundary: end punctuation followed by whitespace, or a blank
+# line (paragraph break). Single line breaks are NOT boundaries — models
+# reflow prose freely, and a wrapped sentence must stay one unit.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+|\n\s*\n+")
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+# Context units around each change: difflib's default 3 for line/sentence
+# hunks; more for tokens, which are far smaller units.
+_UNIT_CONTEXT = 3
+_TOKEN_CONTEXT = 8
+
+
+def _split_units(text: str, diff_mode: DiffMode) -> list[str]:
+    # splitlines() without keepends: trailing newlines on diff rows made
+    # every renderer emit a blank line after each one.
+    if diff_mode == DiffMode.TOKEN:
+        return text.split()
+    if diff_mode == DiffMode.SENTENCE:
+        # Collapse internal whitespace (including reflowed line breaks) so a
+        # rewrapped but unedited sentence compares and displays as one unit.
+        units = (" ".join(s.split()) for s in _SENTENCE_BOUNDARY_RE.split(text))
+        return [unit for unit in units if unit]
+    return text.splitlines()
+
+
+def _comparison_key(unit: str, ignore_whitespace: bool, ignore_case: bool) -> str:
+    if ignore_whitespace:
+        unit = _WHITESPACE_RUN_RE.sub(" ", unit).strip()
+    if ignore_case:
+        unit = unit.casefold()
+    return unit
+
+
+def _format_range(start: int, stop: int) -> str:
+    """Unified-diff range text, matching difflib's formatting exactly."""
+    beginning = start + 1
+    length = stop - start
+    if length == 1:
+        return str(beginning)
+    if not length:
+        beginning -= 1
+    return f"{beginning},{length}"
+
+
+def _unified_from_opcodes(
+    a_units: list[str],
+    b_units: list[str],
+    a_keys: list[str],
+    b_keys: list[str],
+    join_runs: bool,
+    context: int,
+) -> list[str]:
+    """Unified-diff-shaped output comparing keys but displaying originals.
+
+    With join_runs (token mode), each equal/deleted/inserted run becomes one
+    output line instead of one line per unit. Matches difflib.unified_diff
+    line-for-line when keys equal units and join_runs is False.
+    """
+    matcher = difflib.SequenceMatcher(a=a_keys, b=b_keys, autojunk=False)
+    out: list[str] = []
+
+    for group in matcher.get_grouped_opcodes(context):
+        if not out:
+            out.append("--- version-a")
+            out.append("+++ version-b")
+        first, last = group[0], group[-1]
+        out.append(
+            f"@@ -{_format_range(first[1], last[2])} "
+            f"+{_format_range(first[3], last[4])} @@"
+        )
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                emitted = a_units[i1:i2]
+                if join_runs:
+                    emitted = [" ".join(emitted)] if emitted else []
+                out.extend(f" {unit}" for unit in emitted)
+                continue
+            if tag in ("replace", "delete"):
+                removed = a_units[i1:i2]
+                if join_runs:
+                    removed = [" ".join(removed)] if removed else []
+                out.extend(f"-{unit}" for unit in removed)
+            if tag in ("replace", "insert"):
+                added = b_units[j1:j2]
+                if join_runs:
+                    added = [" ".join(added)] if added else []
+                out.extend(f"+{unit}" for unit in added)
+
+    return out
+
+
 def compute_diff(
     case_id: str,
     response_a: str,
@@ -67,26 +158,33 @@ def compute_diff(
     stability: StabilityStats | None = None,
     timing_a: SideTiming | None = None,
     timing_b: SideTiming | None = None,
+    diff_mode: DiffMode = DiffMode.LINE,
+    ignore_whitespace: bool = False,
+    ignore_case: bool = False,
 ) -> DiffResult:
-    """Compute line-level diff and change status for one case.
+    """Compute the textual diff and change status for one case.
+
+    diff_mode selects the diff unit (lines, tokens, or sentences). The
+    ignore toggles normalize units for *comparison* only — the diff still
+    displays the original text, but units differing only in whitespace or
+    case no longer count as changes.
 
     In stability mode, response_a/response_b are the first sample of each
     side (shown as the representative diff) and similarity is the mean
     cross-side similarity over all runs.
     """
-    # No keepends: with lineterm="" the diff needs no trailing newlines, and
-    # keeping them made every renderer emit a blank line after each diff row.
-    a_lines = response_a.splitlines()
-    b_lines = response_b.splitlines()
+    a_units = _split_units(response_a, diff_mode)
+    b_units = _split_units(response_b, diff_mode)
+    a_keys = [_comparison_key(u, ignore_whitespace, ignore_case) for u in a_units]
+    b_keys = [_comparison_key(u, ignore_whitespace, ignore_case) for u in b_units]
 
-    unified = list(
-        difflib.unified_diff(
-            a_lines,
-            b_lines,
-            fromfile="version-a",
-            tofile="version-b",
-            lineterm="",
-        )
+    unified = _unified_from_opcodes(
+        a_units,
+        b_units,
+        a_keys,
+        b_keys,
+        join_runs=diff_mode == DiffMode.TOKEN,
+        context=_TOKEN_CONTEXT if diff_mode == DiffMode.TOKEN else _UNIT_CONTEXT,
     )
 
     has_line_diff = any(

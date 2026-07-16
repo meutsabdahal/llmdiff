@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 import llmdiff.cli as cli
 from llmdiff.config import (
     ChangedWhen,
+    DiffMode,
     ModelConfig,
     OutputFormat,
     RunConfig,
@@ -982,6 +983,80 @@ def test_cli_sarif_output_points_at_inputs_file(tmp_path, monkeypatch):
     assert location["artifactLocation"]["uri"] == "cases.json"
     # indent=2 puts the "id" key of the first case on line 3.
     assert location["region"]["startLine"] == 3
+
+
+def test_cli_diff_mode_and_ignore_toggles_set_run_config(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            "--diff-mode",
+            "sentence",
+            "--ignore-whitespace",
+            "--ignore-case",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.diff_mode == DiffMode.SENTENCE
+    assert cfg.ignore_whitespace is True
+    assert cfg.ignore_case is True
+
+
+def test_cli_diff_mode_defaults_to_line(tmp_path, monkeypatch):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.diff_mode == DiffMode.LINE
+    assert cfg.ignore_whitespace is False
+    assert cfg.ignore_case is False
 
 
 def test_cli_side_by_side_flag_sets_run_config(tmp_path, monkeypatch):

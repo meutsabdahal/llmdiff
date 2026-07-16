@@ -19,6 +19,22 @@ class OutputFormat(str, Enum):
     SARIF = "sarif"
 
 
+class DiffMode(str, Enum):
+    """Granularity of the textual diff.
+
+    LINE: classic unified diff over lines (default).
+    TOKEN: diff over whitespace-separated tokens, with contiguous runs
+    joined per output line — robust to reflowed prose where lines shift
+    but the wording barely changes.
+    SENTENCE: diff over sentences, so a reworded sentence shows as one
+    change instead of a cascade of shifted lines.
+    """
+
+    LINE = "line"
+    TOKEN = "token"
+    SENTENCE = "sentence"
+
+
 class ChangedWhen(str, Enum):
     """What marks a case as changed.
 
@@ -115,6 +131,9 @@ class RunConfig(BaseModel):
     filter_changed: bool = False
     threshold: float | None = None
     changed_when: ChangedWhen = ChangedWhen.ANY
+    diff_mode: DiffMode = DiffMode.LINE
+    ignore_whitespace: bool = False  # collapse whitespace runs when comparing
+    ignore_case: bool = False  # casefold text when comparing
 
     @field_validator("cases")
     @classmethod

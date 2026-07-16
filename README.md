@@ -163,6 +163,34 @@ applied afterwards. Tag filtering also works with `--save-baseline` /
 `--baseline`, so a baseline can be snapshotted for just the subset you care
 about.
 
+### Diff modes and comparison toggles
+
+LLMs reflow prose freely, so a line diff often screams "everything changed"
+when one word did. Pick the diff unit that matches your output:
+
+```bash
+llmdiff ... --diff-mode line       # classic unified diff (default)
+llmdiff ... --diff-mode token      # word-level: isolates the exact tokens that changed
+llmdiff ... --diff-mode sentence   # sentence-level: one change per reworded sentence
+```
+
+Token mode joins unchanged runs onto single context lines, so `5` → `7`
+inside a paragraph shows as exactly `-5` / `+7`. Sentence mode treats end
+punctuation and blank lines as boundaries — a rewrapped but unedited
+sentence is not a change.
+
+Two normalization toggles apply to any mode:
+
+```bash
+llmdiff ... --ignore-whitespace    # whitespace-only differences are not changes
+llmdiff ... --ignore-case          # case-only differences are not changes
+```
+
+Both affect comparison only — the diff still displays the original text.
+Combined with `--changed-when lines` (or `--fail-on-changed`), these decide
+what counts as a regression: `--diff-mode sentence --ignore-case` fails CI
+only when actual wording changes.
+
 ### Filter and threshold
 
 ```bash

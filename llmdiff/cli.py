@@ -34,6 +34,7 @@ from llmdiff.cache import ResponseCache, default_cache_dir
 from llmdiff.config import (
     MAX_STABILITY_RUNS,
     ChangedWhen,
+    DiffMode,
     ModelConfig,
     OutputFormat,
     RunConfig,
@@ -739,6 +740,32 @@ def main(
             "CLI flags override config values."
         ),
     ),
+    diff_mode: DiffMode = typer.Option(
+        DiffMode.LINE,
+        "--diff-mode",
+        case_sensitive=False,
+        help=(
+            "Diff granularity: line (classic unified diff), token "
+            "(word-level, robust to reflowed prose), or sentence (one "
+            "change per reworded sentence)."
+        ),
+    ),
+    ignore_whitespace: bool = typer.Option(
+        False,
+        "--ignore-whitespace",
+        help=(
+            "Treat text differing only in whitespace (runs, leading/"
+            "trailing) as unchanged. Display keeps the original text."
+        ),
+    ),
+    ignore_case: bool = typer.Option(
+        False,
+        "--ignore-case",
+        help=(
+            "Treat text differing only in letter case as unchanged. "
+            "Display keeps the original text."
+        ),
+    ),
     changed_when: Optional[ChangedWhen] = typer.Option(
         None,
         "--changed-when",
@@ -1099,6 +1126,9 @@ def main(
         filter_changed=filter_changed or (threshold is not None),
         threshold=threshold,
         changed_when=resolved_changed_when,
+        diff_mode=diff_mode,
+        ignore_whitespace=ignore_whitespace,
+        ignore_case=ignore_case,
     )
     asyncio.run(
         _run(
