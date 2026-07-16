@@ -73,6 +73,8 @@ def test_init_scaffolds_example_files(tmp_path):
         "refusal-boundary",
         "multi-turn",
     ]
+    # The scaffold demonstrates tagging for selective execution.
+    assert cases[0].tags == ["smoke"]
     assert "llmdiff --prompt-a" in result.output
 
 
@@ -634,6 +636,124 @@ def test_cli_base_url_a_falls_back_to_base_url(tmp_path, monkeypatch):
     cfg = captured["cfg"]
     assert cfg.side_a.model_cfg.base_url == "http://side-a:11434"
     assert cfg.side_b.model_cfg.base_url == "http://default:11434"
+
+
+def _write_tagged_inputs(tmp_path):
+    prompt_a = tmp_path / "prompt-a.txt"
+    prompt_b = tmp_path / "prompt-b.txt"
+    inputs = tmp_path / "cases.json"
+    prompt_a.write_text("prompt a")
+    prompt_b.write_text("prompt b")
+    inputs.write_text(
+        json.dumps(
+            [
+                {"id": "greet", "user": "hi", "tags": ["smoke"]},
+                {"id": "refuse", "user": "no", "tags": ["safety", "slow"]},
+                {"id": "untagged", "user": "hey"},
+            ]
+        )
+    )
+    return prompt_a, prompt_b, inputs
+
+
+def _invoke_with_tags(tmp_path, monkeypatch, extra_args):
+    prompt_a, prompt_b, inputs = _write_tagged_inputs(tmp_path)
+    captured = {}
+
+    async def fake_run(cfg, **_kwargs):
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt_a),
+            "--prompt-b",
+            str(prompt_b),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            *extra_args,
+        ],
+    )
+    return result, captured
+
+
+def test_load_cases_accepts_and_strips_tags(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text('[{"id":"case-1","user":"hello","tags":[" smoke "]}]')
+
+    cases = cli._load_cases(path)
+
+    assert cases[0].tags == ["smoke"]
+
+
+def test_load_cases_rejects_blank_tags(tmp_path, capsys):
+    path = tmp_path / "cases.json"
+    path.write_text('[{"id":"case-1","user":"hello","tags":["  "]}]')
+
+    with pytest.raises(typer.Exit):
+        cli._load_cases(path)
+
+    captured = capsys.readouterr()
+    assert "tags must not be empty or whitespace" in captured.err
+
+
+def test_cli_tag_selects_matching_cases(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(tmp_path, monkeypatch, ["--tag", "smoke"])
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet"]
+    assert "running 1 of 3 cases" in result.output
+
+
+def test_cli_multiple_tags_match_any(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path, monkeypatch, ["--tag", "smoke", "--tag", "safety"]
+    )
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet", "refuse"]
+
+
+def test_cli_exclude_tag_drops_cases(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path, monkeypatch, ["--exclude-tag", "slow"]
+    )
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet", "untagged"]
+
+
+def test_cli_tag_and_exclude_tag_combine(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path,
+        monkeypatch,
+        ["--tag", "smoke", "--tag", "safety", "--exclude-tag", "slow"],
+    )
+
+    assert result.exit_code == 0
+    assert [c.id for c in captured["cfg"].cases] == ["greet"]
+
+
+def test_cli_tag_with_no_matches_errors_with_available_tags(tmp_path, monkeypatch):
+    result, _captured = _invoke_with_tags(tmp_path, monkeypatch, ["--tag", "nope"])
+
+    assert result.exit_code == 1
+    assert "no test cases match the tag filter" in result.output
+    assert "available tags: safety, slow, smoke" in result.output
+
+
+def test_cli_unknown_tag_warns_but_runs(tmp_path, monkeypatch):
+    result, captured = _invoke_with_tags(
+        tmp_path, monkeypatch, ["--tag", "smoke", "--tag", "typo"]
+    )
+
+    assert result.exit_code == 0
+    assert "tag(s) not present in any case: typo" in result.output
+    assert [c.id for c in captured["cfg"].cases] == ["greet"]
 
 
 def test_cli_side_by_side_flag_sets_run_config(tmp_path, monkeypatch):

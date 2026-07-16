@@ -74,6 +74,7 @@ class TestCase(BaseModel):
     id: str
     user: str
     context: list[ChatMessage] | None = None  # prior conversation turns
+    tags: list[str] = []  # labels for selective execution via --tag
 
     def messages(self) -> list[dict[str, str]]:
         """Chat messages for this case: context turns, then the user turn."""
@@ -87,6 +88,14 @@ class TestCase(BaseModel):
         if not v.strip():
             raise ValueError("must not be empty")
         return v
+
+    @field_validator("tags")
+    @classmethod
+    def tags_must_not_be_blank(cls, v: list[str]) -> list[str]:
+        cleaned = [tag.strip() for tag in v]
+        if any(not tag for tag in cleaned):
+            raise ValueError("tags must not be empty or whitespace")
+        return cleaned
 
 
 class RunConfig(BaseModel):
