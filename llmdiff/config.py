@@ -74,6 +74,12 @@ class TestCase(BaseModel):
     user: str
     context: list[ChatMessage] | None = None  # prior conversation turns
 
+    def messages(self) -> list[dict[str, str]]:
+        """Chat messages for this case: context turns, then the user turn."""
+        msgs = [m.model_dump() for m in (self.context or [])]
+        msgs.append({"role": "user", "content": self.user})
+        return msgs
+
     @field_validator("id", "user")
     @classmethod
     def required_text_fields(cls, v: str) -> str:

@@ -197,6 +197,35 @@ The case's `similarity` (used by `--threshold` and the `--fail-*` policies)
 becomes the mean over runs, which makes CI gates far less flaky. The JSON
 report gains a per-case `stability` object and a summary `beyond_noise_count`.
 
+### Baseline snapshots
+
+Instead of running two prompts side by side, you can snapshot one prompt's
+responses once and diff against that file later — nothing re-runs the old
+prompt, so comparisons are faster, cheaper, and stable over time.
+
+```bash
+# 1. Snapshot the current prompt (side A only, no comparison)
+llmdiff --prompt-a prompts/system.txt --inputs tests/cases.json --model llama3.2 --save-baseline baseline.json
+
+# 2. Later: compare a new prompt against the snapshot
+llmdiff --prompt-b prompts/system_new.txt --inputs tests/cases.json --baseline baseline.json --fail-on-changed
+```
+
+The baseline file stores the prompt, model config, and full response per test
+case, plus a hash of each case's input. A compare run refuses to use a stale
+baseline: if a test case was added or its input edited since the snapshot,
+llmdiff exits with an error naming the affected case ids — re-create the
+baseline with `--save-baseline`.
+
+All the usual flags work on the comparing run (`--threshold`, `--changed-when`,
+`--fail-*`, `--format`, caching). Side A is served entirely from the file, so
+the baseline's model does not need to be pulled — useful when the baseline was
+created on another machine (e.g. a CI artifact). `--runs` is the exception:
+stability mode needs multiple samples per side and a baseline stores one.
+
+Tip: pin `--seed` and `--temperature 0` when saving the baseline to make it
+reproducible; the settings are recorded in the file.
+
 ### Response caching
 
 Model responses are cached in `~/.cache/llmdiff/` (or `$XDG_CACHE_HOME/llmdiff/`),

@@ -247,6 +247,207 @@ def test_cli_no_cache_flag_controls_caching(
     assert captured["use_cache"] is expected_use_cache
 
 
+def _write_inputs_and_prompt(tmp_path):
+    prompt = tmp_path / "prompt.txt"
+    inputs = tmp_path / "cases.json"
+    prompt.write_text("a prompt")
+    inputs.write_text(json.dumps([{"id": "case-1", "user": "hello"}]))
+    return prompt, inputs
+
+
+def test_cli_requires_prompts_without_baseline_flags(tmp_path):
+    _, inputs = _write_inputs_and_prompt(tmp_path)
+
+    result = runner.invoke(cli.app, ["--inputs", str(inputs)])
+
+    assert result.exit_code == 1
+    assert "--prompt-a and --prompt-b are required" in result.output
+
+
+def test_cli_save_baseline_runs_snapshot(tmp_path, monkeypatch):
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    captured = {}
+
+    async def fake_run_snapshot(side, cases, **kwargs):
+        captured["side"] = side
+        captured["cases"] = cases
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(cli, "_run_snapshot", fake_run_snapshot)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--save-baseline",
+            str(tmp_path / "baseline.json"),
+            "--model",
+            "mistral",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["side"].prompt == "a prompt"
+    assert captured["side"].model_cfg.model == "mistral"
+    assert [c.id for c in captured["cases"]] == ["case-1"]
+    assert captured["kwargs"]["output_path"] == tmp_path / "baseline.json"
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_error"),
+    [
+        (["--prompt-b", "b.txt"], "remove --prompt-b"),
+        (["--runs", "3"], "remove --runs"),
+        (["--format", "json"], "remove --output / --format"),
+        (["--fail-on-changed"], "failure policies do not apply"),
+    ],
+)
+def test_cli_save_baseline_rejects_incompatible_flags(
+    tmp_path, extra_args, expected_error
+):
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--save-baseline",
+            str(tmp_path / "baseline.json"),
+            *extra_args,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert expected_error in result.output
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_error"),
+    [
+        (["--prompt-a", "a.txt"], "remove --prompt-a"),
+        (["--runs", "3"], "cannot be combined with --baseline"),
+        ([], "--baseline requires --prompt-b"),
+    ],
+)
+def test_cli_baseline_rejects_incompatible_flags(tmp_path, extra_args, expected_error):
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    args = ["--inputs", str(inputs), "--baseline", str(tmp_path / "baseline.json")]
+    if expected_error != "--baseline requires --prompt-b":
+        args += ["--prompt-b", str(prompt)]
+
+    result = runner.invoke(cli.app, args + extra_args)
+
+    assert result.exit_code == 1
+    assert expected_error in result.output
+
+
+def test_cli_save_baseline_and_baseline_are_mutually_exclusive(tmp_path):
+    _, inputs = _write_inputs_and_prompt(tmp_path)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--inputs",
+            str(inputs),
+            "--save-baseline",
+            str(tmp_path / "b1.json"),
+            "--baseline",
+            str(tmp_path / "b2.json"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "mutually exclusive" in result.output
+
+
+def test_cli_baseline_compare_serves_side_a_from_file(tmp_path, monkeypatch):
+    from llmdiff.baseline import build_baseline_document, render_baseline
+    from llmdiff.config import ModelConfig as MC
+    from llmdiff.config import SideConfig as SC
+
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    baseline_side = SC(prompt="saved prompt", model_cfg=MC(model="saved-model"))
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        render_baseline(
+            build_baseline_document(
+                baseline_side,
+                [(PromptCase(id="case-1", user="hello"), "saved answer")],
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    async def fake_run_diffs(cfg, **kwargs):
+        captured["cfg"] = cfg
+        captured["baseline_responses"] = kwargs.get("baseline_responses")
+        return [_mk_diff("case-1", changed=False)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+    monkeypatch.setattr(cli, "render_case_inline", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "render_summary", lambda *_a, **_k: None)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-b",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--baseline",
+            str(baseline_path),
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cfg"].side_a.prompt == "saved prompt"
+    assert captured["cfg"].side_a.model_cfg.model == "saved-model"
+    assert captured["baseline_responses"] == {"case-1": "saved answer"}
+
+
+def test_cli_baseline_compare_rejects_stale_baseline(tmp_path):
+    from llmdiff.baseline import build_baseline_document, render_baseline
+    from llmdiff.config import ModelConfig as MC
+    from llmdiff.config import SideConfig as SC
+
+    prompt, inputs = _write_inputs_and_prompt(tmp_path)
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        render_baseline(
+            build_baseline_document(
+                SC(prompt="saved prompt", model_cfg=MC(model="m")),
+                [(PromptCase(id="case-1", user="an older question"), "answer")],
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-b",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--baseline",
+            str(baseline_path),
+            "--no-semantic",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "input changed since the baseline: case-1" in result.output
+
+
 def test_cli_runs_flag_enables_stability_mode(tmp_path, monkeypatch):
     prompt_a = tmp_path / "prompt-a.txt"
     prompt_b = tmp_path / "prompt-b.txt"

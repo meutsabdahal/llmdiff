@@ -179,7 +179,7 @@ async def test_run_diffs_checks_models_when_cache_incomplete(tmp_path, monkeypat
     async def fake_check_models_available(_client, endpoint, models):
         check_calls.append(endpoint)
 
-    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None):
+    async def fake_run_case(_client, _semaphore, _cfg, _case, cache=None, baseline_responses=None):
         return "answer a", "answer b"
 
     monkeypatch.setattr(
