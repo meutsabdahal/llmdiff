@@ -68,6 +68,9 @@ _WHITESPACE_RUN_RE = re.compile(r"\s+")
 _UNIT_CONTEXT = 3
 _TOKEN_CONTEXT = 8
 
+_DIFF_HEADER_A = "--- version-a"
+_DIFF_HEADER_B = "+++ version-b"
+
 
 def _split_units(text: str, diff_mode: DiffMode) -> list[str]:
     # splitlines() without keepends: trailing newlines on diff rows made
@@ -120,8 +123,8 @@ def _unified_from_opcodes(
 
     for group in matcher.get_grouped_opcodes(context):
         if not out:
-            out.append("--- version-a")
-            out.append("+++ version-b")
+            out.append(_DIFF_HEADER_A)
+            out.append(_DIFF_HEADER_B)
         first, last = group[0], group[-1]
         out.append(
             f"@@ -{_format_range(first[1], last[2])} "
@@ -146,6 +149,18 @@ def _unified_from_opcodes(
                 out.extend(f"+{unit}" for unit in added)
 
     return out
+
+
+def diff_display_rows(unified_diff: list[str]) -> list[str]:
+    """The diff rows without the two file-header rows.
+
+    Headers are identified by position, not prefix: content lines starting
+    with "--"/"++" (a removed markdown rule, "++i;") render as rows starting
+    "---"/"+++" and must survive header stripping.
+    """
+    if unified_diff[:2] == [_DIFF_HEADER_A, _DIFF_HEADER_B]:
+        return unified_diff[2:]
+    return unified_diff
 
 
 def compute_diff(
@@ -187,9 +202,10 @@ def compute_diff(
         context=_TOKEN_CONTEXT if diff_mode == DiffMode.TOKEN else _UNIT_CONTEXT,
     )
 
-    has_line_diff = any(
-        l.startswith(("+", "-")) and not l.startswith(("+++", "---")) for l in unified
-    )
+    # Compare the keys, not the rendered rows: a content line starting with
+    # "--"/"++" renders as a "---..."/"+++..." row that a prefix check would
+    # mistake for a file header.
+    has_line_diff = a_keys != b_keys
     below_threshold = (
         threshold is not None and similarity is not None and similarity < threshold
     )

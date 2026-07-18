@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from xml.etree import ElementTree as ET
 
-from llmdiff.differ import DiffResult
+from llmdiff.differ import DiffResult, diff_display_rows
 from llmdiff.metrics import Summary
 
 # XML 1.0 forbids most C0 control characters even when escaped; strip them so
@@ -39,11 +39,7 @@ def _failure_details(result: DiffResult) -> str:
             f"({verdict})"
         )
 
-    diff_lines = [
-        line
-        for line in result.unified_diff
-        if not (line.startswith("+++") or line.startswith("---"))
-    ]
+    diff_lines = diff_display_rows(result.unified_diff)
     if diff_lines:
         lines.append("")
         lines.append("diff:")

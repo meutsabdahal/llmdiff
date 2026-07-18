@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from llmdiff.differ import DiffResult
+from llmdiff.differ import DiffResult, diff_display_rows
 from llmdiff.metrics import Summary
 
 _BACKTICK_RUN_RE = re.compile(r"`+")
@@ -142,11 +142,7 @@ def _case_section(result: DiffResult) -> list[str]:
             "",
         ]
 
-    diff_lines = [
-        line
-        for line in result.unified_diff
-        if not (line.startswith("+++") or line.startswith("---"))
-    ]
+    diff_lines = diff_display_rows(result.unified_diff)
     if diff_lines:
         # Blank lines around the fence are required for GitHub to render
         # markdown inside <details>.

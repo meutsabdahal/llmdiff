@@ -72,6 +72,29 @@ def test_render_case_inline_no_truncation_when_disabled(monkeypatch):
     assert "diff lines hidden; use --max-diff-lines 0 to show all" not in out
 
 
+def test_render_case_inline_keeps_diff_rows_that_look_like_headers(monkeypatch):
+    fake_console = Console(record=True, width=160)
+    monkeypatch.setattr(terminal, "console", fake_console)
+
+    result = replace(
+        _make_result(),
+        unified_diff=[
+            "--- version-a",
+            "+++ version-b",
+            "@@ -1,3 +1,3 @@",
+            "----",
+            "+++counter;",
+        ],
+    )
+    terminal.render_case_inline(result, max_diff_lines=0)
+
+    out = fake_console.export_text()
+    assert "----" in out
+    assert "+++counter;" in out
+    assert "version-a" not in out
+    assert "version-b" not in out
+
+
 def test_render_case_side_by_side_puts_responses_in_columns(monkeypatch):
     fake_console = Console(record=True, width=120)
     monkeypatch.setattr(terminal, "console", fake_console)

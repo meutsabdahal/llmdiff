@@ -170,8 +170,11 @@ cases.forEach(c => {{
   if (c.diff && c.diff.length > 0) {{
     const ds = el('div', 'diff-section');
     ds.appendChild(el('div', 'diff-label', 'Diff'));
-    c.diff.forEach(line => {{
-      if (line.startsWith('+++') || line.startsWith('---')) return;
+    // Strip the file headers by position, not prefix: content rows may
+    // legitimately start with '---'/'+++' (e.g. a removed markdown rule).
+    const rows = (c.diff[0] === '--- version-a' && c.diff[1] === '+++ version-b')
+      ? c.diff.slice(2) : c.diff;
+    rows.forEach(line => {{
       const d = el('div', 'diff-line');
       d.textContent = line;
       if (line.startsWith('+')) d.className += ' diff-add';

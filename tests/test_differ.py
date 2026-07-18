@@ -1,7 +1,7 @@
 import difflib
 
 from llmdiff.config import ChangedWhen, DiffMode
-from llmdiff.differ import _structural_diff, compute_diff
+from llmdiff.differ import _structural_diff, compute_diff, diff_display_rows
 
 
 def test_identical_responses_not_changed():
@@ -233,6 +233,41 @@ def test_sentence_mode_splits_unpunctuated_blocks_on_blank_lines():
     assert "-- alpha - beta" in result.unified_diff
     assert "+- alpha - gamma" in result.unified_diff
     assert " Intro heading" in result.unified_diff
+
+
+def test_removed_markdown_rule_line_marks_changed():
+    # A removed "---" line renders as a "----" row, which a prefix-based
+    # header check would mistake for the "--- version-a" file header.
+    result = _diff("Intro.\n---\nDetails.", "Intro.\nDetails.")
+
+    assert result.changed
+    assert "----" in result.unified_diff
+
+
+def test_added_line_starting_with_plus_plus_marks_changed():
+    result = _diff("keep", "keep\n++counter;")
+
+    assert result.changed
+    assert "+++counter;" in result.unified_diff
+
+
+def test_token_mode_removed_dash_dash_token_marks_changed():
+    result = _diff(
+        "wait -- stop now", "wait stop now", diff_mode=DiffMode.TOKEN
+    )
+
+    assert result.changed
+    assert "---" in result.unified_diff
+
+
+def test_diff_display_rows_strips_headers_by_position_not_prefix():
+    result = _diff("Intro.\n---\nDetails.", "Intro.\nDetails.")
+
+    rows = diff_display_rows(result.unified_diff)
+
+    assert "--- version-a" not in rows
+    assert "+++ version-b" not in rows
+    assert "----" in rows
 
 
 def test_ignore_case_marks_case_only_change_unchanged():

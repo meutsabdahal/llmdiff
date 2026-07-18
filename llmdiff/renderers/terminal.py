@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from llmdiff.differ import DiffResult
+from llmdiff.differ import DiffResult, diff_display_rows
 from llmdiff.metrics import Summary
 
 console = Console()
@@ -54,11 +54,7 @@ def _print_diff_section(result: DiffResult, max_diff_lines: int) -> None:
 
     console.print(" [dim]Diff[/dim]")
     console.print()
-    diff_lines = [
-        line
-        for line in result.unified_diff
-        if not (line.startswith("+++") or line.startswith("---"))
-    ]
+    diff_lines = diff_display_rows(result.unified_diff)
     diff_lines, diff_hidden = _truncate_lines(diff_lines, max_diff_lines)
 
     for line in diff_lines:
