@@ -765,6 +765,58 @@ def test_cli_unknown_tag_warns_but_runs(tmp_path, monkeypatch):
     assert [c.id for c in captured["cfg"].cases] == ["greet"]
 
 
+def test_cli_diagnostics_go_to_stderr_keeping_json_stdout_parseable(
+    tmp_path, monkeypatch
+):
+    # Fire every diagnostic at once — identical-sides warning, unknown-tag
+    # warning, tag-filter notice, and a failure-policy line — and check that
+    # piped --format json stdout still parses.
+    prompt = tmp_path / "prompt.txt"
+    inputs = tmp_path / "cases.json"
+    prompt.write_text("prompt")
+    inputs.write_text(
+        json.dumps(
+            [
+                {"id": "greet", "user": "hi", "tags": ["smoke"]},
+                {"id": "refuse", "user": "no", "tags": ["safety"]},
+            ]
+        )
+    )
+
+    async def fake_run_diffs(_cfg, **_kwargs):
+        return [_mk_diff("greet", changed=True)]
+
+    monkeypatch.setattr(cli, "run_diffs", fake_run_diffs)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--prompt-a",
+            str(prompt),
+            "--prompt-b",
+            str(prompt),
+            "--inputs",
+            str(inputs),
+            "--no-semantic",
+            "--tag",
+            "smoke",
+            "--tag",
+            "typo",
+            "--format",
+            "json",
+            "--fail-on-changed",
+        ],
+    )
+
+    assert result.exit_code == 1
+    report = json.loads(result.stdout)
+    assert report["summary"]["changed_count"] == 1
+    assert "Both sides are identical" in result.stderr
+    assert "tag(s) not present in any case: typo" in result.stderr
+    assert "running 1 of 2 cases" in result.stderr
+    assert "--fail-on-changed triggered" in result.stderr
+
+
 def _policy_project(tmp_path, policy_toml):
     prompt_a = tmp_path / "prompt-a.txt"
     prompt_b = tmp_path / "prompt-b.txt"

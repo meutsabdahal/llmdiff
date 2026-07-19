@@ -71,6 +71,10 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+# Diagnostics (warnings, notices, progress, errors) go to stderr so that
+# piped --format json/junit/sarif stdout stays parseable; stdout carries
+# only the report itself.
+err_console = Console(stderr=True)
 _ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Only variables llmdiff actually uses are imported from .env files. Loading
 # arbitrary keys would let a .env in an untrusted working directory inject
@@ -315,7 +319,7 @@ def _filter_cases_by_tags(
     known_tags = sorted({tag for case in cases for tag in case.tags})
     unknown = sorted(set(include + exclude) - set(known_tags))
     if unknown:
-        console.print(
+        err_console.print(
             f"[yellow]Warning:[/yellow] tag(s) not present in any case: "
             f"{', '.join(unknown)}"
         )
@@ -338,7 +342,7 @@ def _filter_cases_by_tags(
         raise typer.Exit(1)
 
     if len(selected) < len(cases):
-        console.print(
+        err_console.print(
             f"[dim]Tag filter: running {len(selected)} of {len(cases)} cases[/dim]"
         )
     return selected
@@ -437,7 +441,7 @@ def _write_output_report(output_path: Path, content: str) -> None:
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        console.print(
+        err_console.print(
             "[red]Error:[/red] Failed to create output directory "
             f"'{output_path.parent}': {e}"
         )
@@ -446,7 +450,7 @@ def _write_output_report(output_path: Path, content: str) -> None:
     try:
         output_path.write_text(content, encoding="utf-8")
     except OSError as e:
-        console.print(
+        err_console.print(
             "[red]Error:[/red] Failed to write report to " f"'{output_path}': {e}"
         )
         raise typer.Exit(1)
@@ -875,8 +879,7 @@ def main(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
     if policy.source is not None:
-        # stderr keeps piped --format json/junit/sarif output parseable.
-        Console(stderr=True).print(
+        err_console.print(
             f"[dim]Regression policy loaded from {policy.source}[/dim]"
         )
 
@@ -956,7 +959,7 @@ def main(
             if value is not None
         ]
         if ignored_side_a_flags:
-            console.print(
+            err_console.print(
                 f"[yellow]Warning:[/yellow] {', '.join(ignored_side_a_flags)} "
                 "ignored: side A comes from the baseline file."
             )
@@ -1037,7 +1040,7 @@ def main(
     resolved_base_url_b = base_url_b or base_url
 
     if resolved_model_a == resolved_model_b and prompt_a == prompt_b:
-        console.print(
+        err_console.print(
             "[yellow]Warning:[/yellow] Both sides are identical "
             "(same prompt file, same model). Results will show no diff."
         )
@@ -1068,7 +1071,7 @@ def main(
     )
 
     if runs > 1 and model_cfg_a.temperature == 0 and model_cfg_b.temperature == 0:
-        console.print(
+        err_console.print(
             "[yellow]Warning:[/yellow] --temperature 0 makes generation "
             "deterministic, so repeated --runs samples will be identical "
             "(zero variance). Use a nonzero temperature for stability mode."
@@ -1158,7 +1161,7 @@ async def _run_snapshot(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        console=console,
+        console=err_console,
         transient=True,
     ) as progress:
         task = progress.add_task(
@@ -1178,12 +1181,12 @@ async def _run_snapshot(
                 on_case_completed=on_case_completed,
             )
         except RuntimeError as e:
-            console.print(f"[red]Error:[/red] {e}")
+            err_console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
 
     document = build_baseline_document(side, responses)
     _write_output_report(output_path, render_baseline(document))
-    console.print(
+    err_console.print(
         f"[dim]Baseline saved to {output_path} "
         f"({len(cases)} cases, model {side.model_cfg.model})[/dim]"
     )
@@ -1219,7 +1222,7 @@ async def _run(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        console=console,
+        console=err_console,
         transient=True,
     ) as progress:
         runs_suffix = f" x {cfg.runs} runs" if cfg.runs > 1 else ""
@@ -1265,7 +1268,7 @@ async def _run(
                     baseline_responses=baseline_responses,
                 )
         except RuntimeError as e:
-            console.print(f"[red]Error:[/red] {e}")
+            err_console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
 
     display = [r for r in results if r.changed] if cfg.filter_changed else results
@@ -1294,7 +1297,7 @@ async def _run(
         out = renderer(results, summary)
         if output_path:
             _write_output_report(output_path, out)
-            console.print(f"[dim]Report saved to {output_path}[/dim]")
+            err_console.print(f"[dim]Report saved to {output_path}[/dim]")
         else:
             print(out)
     else:
@@ -1314,5 +1317,5 @@ async def _run(
 
     if policy_failures:
         for failure in policy_failures:
-            console.print(f"[red]Failure policy:[/red] {failure}")
+            err_console.print(f"[red]Failure policy:[/red] {failure}")
         raise typer.Exit(1)
