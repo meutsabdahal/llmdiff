@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from xml.etree import ElementTree as ET
 
-from llmdiff.differ import DiffResult, diff_display_rows
+from llmdiff.differ import DiffResult, diff_display_rows, format_length_pct
 from llmdiff.metrics import Summary
 
 # XML 1.0 forbids most C0 control characters even when escaped; strip them so
@@ -19,15 +19,15 @@ def _xml_safe(text: str) -> str:
 def _failure_message(result: DiffResult) -> str:
     sim = result.similarity
     sim_str = f"{sim:.4f}" if sim is not None else "n/a"
-    pct = result.structural_changes["length_pct"]
-    return f"Responses diverged (similarity {sim_str}, length {pct:+.0f}%)"
+    pct_str = format_length_pct(result.structural_changes["length_pct"])
+    return f"Responses diverged (similarity {sim_str}, length {pct_str})"
 
 
 def _failure_details(result: DiffResult) -> str:
     lines = [
         f"similarity: {f'{result.similarity:.4f}' if result.similarity is not None else 'n/a'}",
         f"length: A {result.length_a} words, B {result.length_b} words "
-        f"({result.structural_changes['length_pct']:+.0f}%)",
+        f"({format_length_pct(result.structural_changes['length_pct'])})",
     ]
 
     st = result.stability

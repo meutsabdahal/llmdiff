@@ -254,6 +254,27 @@ def test_render_junit_marks_changed_cases_as_failures():
     assert testcases[1].findall("failure") == []
 
 
+def test_render_junit_reports_na_length_for_empty_side_a():
+    result = _sample_result()
+    result.structural_changes["length_pct"] = None
+
+    xml = render_junit([result], _sample_summary())
+
+    root = ElementTree.fromstring(xml)
+    failure = root.find("./testsuite/testcase/failure")
+    assert "length n/a" in failure.get("message")
+    assert "(n/a)" in failure.text
+
+
+def test_render_markdown_reports_na_length_for_empty_side_a():
+    result = _sample_result()
+    result.structural_changes["length_pct"] = None
+
+    md = render_markdown([result], _sample_summary())
+
+    assert "words (n/a)" in md
+
+
 def test_render_junit_totals_follow_rendered_results():
     # With --filter the renderer receives only the changed cases; the suite
     # totals must describe the document, not the full run.

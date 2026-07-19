@@ -45,6 +45,18 @@ def test_length_pct_calculation():
     assert sc["length_pct"] > 0  # B is longer
 
 
+def test_length_pct_is_none_when_side_a_is_empty():
+    # Growth from an empty response has no percentage; 0.0 here would
+    # display as "+0%", i.e. no length change.
+    sc = _structural_diff("", "some words here")
+    assert sc["length_pct"] is None
+
+
+def test_length_pct_is_zero_when_both_sides_empty():
+    sc = _structural_diff("", "")
+    assert sc["length_pct"] == 0.0
+
+
 def test_structural_list_detection():
     a = "Here are options:\n- Option one\n- Option two"
     b = "Here are options:\n1. Option one\n2. Option two"

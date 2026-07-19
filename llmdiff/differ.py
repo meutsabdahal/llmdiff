@@ -44,17 +44,30 @@ def _count_structural(text: str) -> dict:
 def _structural_diff(a: str, b: str) -> dict:
     sa = _count_structural(a)
     sb = _count_structural(b)
-    length_pct = 0.0
+    length_pct: float | None
     if sa["word_count"] > 0:
-        length_pct = (sb["word_count"] - sa["word_count"]) / sa["word_count"] * 100
+        length_pct = round(
+            (sb["word_count"] - sa["word_count"]) / sa["word_count"] * 100, 1
+        )
+    elif sb["word_count"] > 0:
+        # Growth from an empty response has no percentage; None keeps it
+        # from being reported as "+0%", i.e. no length change.
+        length_pct = None
+    else:
+        length_pct = 0.0
 
     return {
         "lists_changed": sa["list_items"] != sb["list_items"],
         "code_blocks_changed": sa["code_blocks"] != sb["code_blocks"],
-        "length_pct": round(length_pct, 1),
+        "length_pct": length_pct,
         "word_count_a": sa["word_count"],
         "word_count_b": sb["word_count"],
     }
+
+
+def format_length_pct(pct: float | None) -> str:
+    """Length delta for display; n/a when the A side was empty."""
+    return "n/a" if pct is None else f"{pct:+.0f}%"
 
 
 # Sentence boundary: end punctuation followed by whitespace, or a blank

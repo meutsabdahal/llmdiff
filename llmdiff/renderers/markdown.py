@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from llmdiff.differ import DiffResult, diff_display_rows
+from llmdiff.differ import DiffResult, diff_display_rows, format_length_pct
 from llmdiff.metrics import Summary
 
 _BACKTICK_RUN_RE = re.compile(r"`+")
@@ -96,8 +96,7 @@ def _case_section(result: DiffResult) -> list[str]:
     lines = [f"### {_inline_code(result.case_id)} — {badge}", ""]
 
     sim = result.similarity
-    pct = result.structural_changes["length_pct"]
-    pct_str = f"+{pct:.0f}%" if pct >= 0 else f"{pct:.0f}%"
+    pct_str = format_length_pct(result.structural_changes["length_pct"])
     metrics = [
         f"Similarity: **{f'{sim:.2f}' if sim is not None else 'n/a'}**",
         f"Length: {result.length_a} → {result.length_b} words ({pct_str})",
