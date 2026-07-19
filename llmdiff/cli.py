@@ -1294,7 +1294,7 @@ async def _run(
             render_sarif, inputs_uri=inputs_uri, case_lines=case_lines
         )
     if renderer is not None:
-        out = renderer(results, summary)
+        out = renderer(display, summary)
         if output_path:
             _write_output_report(output_path, out)
             err_console.print(f"[dim]Report saved to {output_path}[/dim]")

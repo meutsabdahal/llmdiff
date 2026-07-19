@@ -64,10 +64,12 @@ def render_junit(results: list[DiffResult], summary: Summary) -> str:
     CircleCI, and similar CI systems.
     """
     durations = [d for r in results if (d := _case_duration_s(r)) is not None]
+    # Totals count the rendered cases, not the full run: with --filter the
+    # document holds only the changed cases and must stay self-consistent.
     totals = {
         "name": "llmdiff",
-        "tests": str(summary.total),
-        "failures": str(summary.changed),
+        "tests": str(len(results)),
+        "failures": str(sum(1 for r in results if r.changed)),
         "errors": "0",
         "skipped": "0",
     }

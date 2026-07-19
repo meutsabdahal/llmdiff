@@ -254,6 +254,16 @@ def test_render_junit_marks_changed_cases_as_failures():
     assert testcases[1].findall("failure") == []
 
 
+def test_render_junit_totals_follow_rendered_results():
+    # With --filter the renderer receives only the changed cases; the suite
+    # totals must describe the document, not the full run.
+    xml = render_junit([_sample_result()], _two_case_summary())
+
+    root = ElementTree.fromstring(xml)
+    assert root.get("tests") == "1"
+    assert root.get("failures") == "1"
+
+
 def test_render_junit_strips_xml_illegal_control_characters():
     result = _sample_result()
     result.response_a = "bad\x08byte"
