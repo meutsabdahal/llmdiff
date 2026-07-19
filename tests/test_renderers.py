@@ -120,6 +120,42 @@ def test_render_markdown_extends_fence_when_content_contains_backticks():
     assert "````diff\n-A\n+```python\n````" in md
 
 
+def test_render_markdown_keeps_diff_rows_that_look_like_headers():
+    result = _sample_result()
+    result.unified_diff = [
+        "--- version-a",
+        "+++ version-b",
+        "@@ -1,3 +1,3 @@",
+        "----",
+        "+++counter;",
+    ]
+
+    md = render_markdown([result], _sample_summary())
+
+    assert "----" in md
+    assert "+++counter;" in md
+    assert "version-a" not in md
+    assert "version-b" not in md
+
+
+def test_render_junit_keeps_diff_rows_that_look_like_headers():
+    result = _sample_result()
+    result.unified_diff = [
+        "--- version-a",
+        "+++ version-b",
+        "@@ -1,3 +1,3 @@",
+        "----",
+        "+++counter;",
+    ]
+
+    xml = render_junit([result], _sample_summary())
+
+    assert "----" in xml
+    assert "+++counter;" in xml
+    assert "version-a" not in xml
+    assert "version-b" not in xml
+
+
 def test_render_markdown_widens_code_span_for_backticks_in_case_id():
     result = _sample_result()
     result.case_id = "case`1"
@@ -216,6 +252,37 @@ def test_render_junit_marks_changed_cases_as_failures():
     assert "-A" in failures[0].text and "+B" in failures[0].text
 
     assert testcases[1].findall("failure") == []
+
+
+def test_render_junit_reports_na_length_for_empty_side_a():
+    result = _sample_result()
+    result.structural_changes["length_pct"] = None
+
+    xml = render_junit([result], _sample_summary())
+
+    root = ElementTree.fromstring(xml)
+    failure = root.find("./testsuite/testcase/failure")
+    assert "length n/a" in failure.get("message")
+    assert "(n/a)" in failure.text
+
+
+def test_render_markdown_reports_na_length_for_empty_side_a():
+    result = _sample_result()
+    result.structural_changes["length_pct"] = None
+
+    md = render_markdown([result], _sample_summary())
+
+    assert "words (n/a)" in md
+
+
+def test_render_junit_totals_follow_rendered_results():
+    # With --filter the renderer receives only the changed cases; the suite
+    # totals must describe the document, not the full run.
+    xml = render_junit([_sample_result()], _two_case_summary())
+
+    root = ElementTree.fromstring(xml)
+    assert root.get("tests") == "1"
+    assert root.get("failures") == "1"
 
 
 def test_render_junit_strips_xml_illegal_control_characters():

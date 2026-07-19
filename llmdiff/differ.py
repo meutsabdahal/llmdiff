@@ -44,17 +44,30 @@ def _count_structural(text: str) -> dict:
 def _structural_diff(a: str, b: str) -> dict:
     sa = _count_structural(a)
     sb = _count_structural(b)
-    length_pct = 0.0
+    length_pct: float | None
     if sa["word_count"] > 0:
-        length_pct = (sb["word_count"] - sa["word_count"]) / sa["word_count"] * 100
+        length_pct = round(
+            (sb["word_count"] - sa["word_count"]) / sa["word_count"] * 100, 1
+        )
+    elif sb["word_count"] > 0:
+        # Growth from an empty response has no percentage; None keeps it
+        # from being reported as "+0%", i.e. no length change.
+        length_pct = None
+    else:
+        length_pct = 0.0
 
     return {
         "lists_changed": sa["list_items"] != sb["list_items"],
         "code_blocks_changed": sa["code_blocks"] != sb["code_blocks"],
-        "length_pct": round(length_pct, 1),
+        "length_pct": length_pct,
         "word_count_a": sa["word_count"],
         "word_count_b": sb["word_count"],
     }
+
+
+def format_length_pct(pct: float | None) -> str:
+    """Length delta for display; n/a when the A side was empty."""
+    return "n/a" if pct is None else f"{pct:+.0f}%"
 
 
 # Sentence boundary: end punctuation followed by whitespace, or a blank
@@ -67,6 +80,9 @@ _WHITESPACE_RUN_RE = re.compile(r"\s+")
 # hunks; more for tokens, which are far smaller units.
 _UNIT_CONTEXT = 3
 _TOKEN_CONTEXT = 8
+
+_DIFF_HEADER_A = "--- version-a"
+_DIFF_HEADER_B = "+++ version-b"
 
 
 def _split_units(text: str, diff_mode: DiffMode) -> list[str]:
@@ -120,8 +136,8 @@ def _unified_from_opcodes(
 
     for group in matcher.get_grouped_opcodes(context):
         if not out:
-            out.append("--- version-a")
-            out.append("+++ version-b")
+            out.append(_DIFF_HEADER_A)
+            out.append(_DIFF_HEADER_B)
         first, last = group[0], group[-1]
         out.append(
             f"@@ -{_format_range(first[1], last[2])} "
@@ -146,6 +162,18 @@ def _unified_from_opcodes(
                 out.extend(f"+{unit}" for unit in added)
 
     return out
+
+
+def diff_display_rows(unified_diff: list[str]) -> list[str]:
+    """The diff rows without the two file-header rows.
+
+    Headers are identified by position, not prefix: content lines starting
+    with "--"/"++" (a removed markdown rule, "++i;") render as rows starting
+    "---"/"+++" and must survive header stripping.
+    """
+    if unified_diff[:2] == [_DIFF_HEADER_A, _DIFF_HEADER_B]:
+        return unified_diff[2:]
+    return unified_diff
 
 
 def compute_diff(
@@ -187,9 +215,10 @@ def compute_diff(
         context=_TOKEN_CONTEXT if diff_mode == DiffMode.TOKEN else _UNIT_CONTEXT,
     )
 
-    has_line_diff = any(
-        l.startswith(("+", "-")) and not l.startswith(("+++", "---")) for l in unified
-    )
+    # Compare the keys, not the rendered rows: a content line starting with
+    # "--"/"++" renders as a "---..."/"+++..." row that a prefix check would
+    # mistake for a file header.
+    has_line_diff = a_keys != b_keys
     below_threshold = (
         threshold is not None and similarity is not None and similarity < threshold
     )

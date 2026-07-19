@@ -4,7 +4,7 @@ import json
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
-from llmdiff.differ import DiffResult
+from llmdiff.differ import DiffResult, format_length_pct
 from llmdiff.metrics import Summary
 
 _RULE_ID = "prompt-behavior-changed"
@@ -21,10 +21,10 @@ def _tool_version() -> str:
 def _result_message(result: DiffResult) -> str:
     sim = result.similarity
     sim_str = f"{sim:.4f}" if sim is not None else "n/a"
-    pct = result.structural_changes["length_pct"]
+    pct_str = format_length_pct(result.structural_changes["length_pct"])
     message = (
         f"Case '{result.case_id}': responses diverged "
-        f"(similarity {sim_str}, length {pct:+.0f}%)."
+        f"(similarity {sim_str}, length {pct_str})."
     )
 
     st = result.stability
